@@ -173,12 +173,27 @@
             <button class="btn-secondary" onclick="autoCrossfade(0,100)">B →</button>
           </div>
           <hr style="border-color:#2a2a32;margin:12px 0">
-          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">MICRÓFONOS</div>
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">
+            MICRÓFONOS
+            <button onclick="loadDJDevices()" style="font-size:.65rem;padding:2px 6px;border-radius:4px;border:1px solid #444;background:#222;color:#aaa;cursor:pointer;margin-left:6px">🔄 detectar</button>
+          </div>
+          <select id="localMicSelect" style="width:100%;padding:5px 6px;font-size:.75rem;background:#111;color:#f0f0f0;border:1px solid #333;border-radius:6px;margin-bottom:6px">
+            <option value="">— micrófono por defecto —</option>
+          </select>
           <label class="dj-mic-row">
             <input type="checkbox" id="chkLocalMic" onchange="toggleDJLocalMic(this.checked)"> 🎙️ Este PC
           </label>
+          <hr style="border-color:#2a2a32;margin:8px 0">
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">CÁMARA</div>
+          <select id="localCamSelect" style="width:100%;padding:5px 6px;font-size:.75rem;background:#111;color:#f0f0f0;border:1px solid #333;border-radius:6px;margin-bottom:6px">
+            <option value="">— sin cámara —</option>
+          </select>
           <label class="dj-mic-row">
-            <input type="checkbox" id="chkRemoteMic" onchange="toggleDJRemoteMic(this.checked)"> 🖥️ PC remota
+            <input type="checkbox" id="chkLocalCam" onchange="toggleDJLocalCamera(this.checked)"> 📷 Cámara este PC
+          </label>
+          <hr style="border-color:#2a2a32;margin:8px 0">
+          <label class="dj-mic-row">
+            <input type="checkbox" id="chkRemoteMic" onchange="toggleDJRemoteMic(this.checked)"> 🖥️ PC remota (mic)
             <span id="remoteMicDot" style="color:#666;font-size:.7rem"> ●</span>
           </label>
           <div style="margin-top:4px;font-size:.7rem;color:var(--muted)" id="remoteMicUrl"></div>

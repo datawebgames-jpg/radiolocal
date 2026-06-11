@@ -904,12 +904,46 @@ function stopDJBroadcast() {
   stopRadio();
 }
 
+// Detectar micrófonos y cámaras disponibles
+async function loadDJDevices() {
+  try {
+    // Pedir permiso primero para que los labels aparezcan
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }).catch(
+      () => navigator.mediaDevices.getUserMedia({ audio: true })
+    );
+    tmp.getTracks().forEach(t => t.stop());
+  } catch(e) {}
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const micSel = document.getElementById('localMicSelect');
+    const camSel = document.getElementById('localCamSelect');
+    micSel.innerHTML = '<option value="">— micrófono por defecto —</option>';
+    camSel.innerHTML = '<option value="">— sin cámara —</option>';
+    devices.forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      if (d.kind === 'audioinput') {
+        o.textContent = d.label || `Micrófono ${micSel.options.length}`;
+        micSel.appendChild(o);
+      } else if (d.kind === 'videoinput') {
+        o.textContent = d.label || `Cámara ${camSel.options.length}`;
+        camSel.appendChild(o);
+      }
+    });
+    showToast('Dispositivos detectados: ' + devices.filter(d => d.kind !== 'audiooutput').length);
+  } catch(e) {
+    showToast('Error al detectar dispositivos: ' + e.message);
+  }
+}
+
 // Mic local en el mezclador DJ
 async function toggleDJLocalMic(on) {
   initDJContext();
   if (on) {
     try {
-      djLocalMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const deviceId = document.getElementById('localMicSelect').value;
+      const constraints = { audio: deviceId ? { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true } : true };
+      djLocalMicStream = await navigator.mediaDevices.getUserMedia(constraints);
       const src = djCtx.createMediaStreamSource(djLocalMicStream);
       djLocalMicNode = djCtx.createGain(); djLocalMicNode.gain.value = 1;
       src.connect(djLocalMicNode); djLocalMicNode.connect(djMasterGain);
@@ -919,6 +953,36 @@ async function toggleDJLocalMic(on) {
     }
   } else {
     if (djLocalMicStream) { djLocalMicStream.getTracks().forEach(t => t.stop()); djLocalMicStream = null; }
+  }
+}
+
+// Cámara local — envía video_chunk a oyentes
+let djLocalCamStream = null, djLocalCamRecorder = null;
+async function toggleDJLocalCamera(on) {
+  if (on) {
+    try {
+      const deviceId = document.getElementById('localCamSelect').value;
+      const constraints = { video: deviceId ? { deviceId: { exact: deviceId }, width: 1280, height: 720 } : { width: 1280, height: 720 }, audio: false };
+      djLocalCamStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
+      djLocalCamRecorder = new MediaRecorder(djLocalCamStream, { mimeType: mime, videoBitsPerSecond: 1_000_000 });
+      djLocalCamRecorder.ondataavailable = async e => {
+        if (e.data.size > 0) socket.emit('video_chunk', await e.data.arrayBuffer());
+      };
+      djLocalCamRecorder.start(500);
+      djLocalCamStream.getVideoTracks()[0].addEventListener('ended', () => {
+        document.getElementById('chkLocalCam').checked = false;
+        toggleDJLocalCamera(false);
+      });
+      showToast('📷 Cámara activada');
+    } catch(e) {
+      showToast('Error cámara: ' + e.message);
+      document.getElementById('chkLocalCam').checked = false;
+    }
+  } else {
+    if (djLocalCamRecorder) { djLocalCamRecorder.stop(); djLocalCamRecorder = null; }
+    if (djLocalCamStream) { djLocalCamStream.getTracks().forEach(t => t.stop()); djLocalCamStream = null; }
+    socket.emit('screen_share_stop');
   }
 }
 
