@@ -6,11 +6,45 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const { spawn } = require('child_process');
+// Cargar .env si existe
+try { require('dotenv').config(); } catch(e) {}
+
 const IS_WIN  = process.platform === 'win32';
-const YT_DLP  = process.env.YT_DLP_PATH  || (IS_WIN ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp');
-const FFMPEG  = process.env.FFMPEG_PATH  || (IS_WIN
-  ? 'C:\\Users\\dataw\\AppData\\Local\\Microsoft\\WinGet\\Packages\\yt-dlp.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-N-124716-g054dffd133-win64-gpl\\bin\\ffmpeg.exe'
-  : 'ffmpeg');
+
+function findWingetTool(name) {
+  if (!IS_WIN) return null;
+  try {
+    const { execSync } = require('child_process');
+    const res = execSync(`where ${name} 2>nul`, { encoding: 'utf8', timeout: 3000 }).trim();
+    if (res) return res.split('\n')[0].trim();
+  } catch(e) {}
+  // Buscar en WinGet packages
+  const glob = require('path');
+  const localApp = process.env.LOCALAPPDATA || '';
+  const patterns = name === 'ffmpeg'
+    ? [glob.join(localApp, 'Microsoft\\WinGet\\Packages\\*FFmpeg*\\**\\ffmpeg.exe')]
+    : [glob.join(localApp, 'Microsoft\\WinGet\\Packages\\yt-dlp*\\yt-dlp.exe')];
+  for (const pat of patterns) {
+    try {
+      const dir = glob.dirname(pat.replace('**\\', ''));
+      const files = require('fs').readdirSync(glob.dirname(dir), { withFileTypes: true });
+      for (const f of files) {
+        if (f.isDirectory() && f.name.toLowerCase().includes(name === 'ffmpeg' ? 'ffmpeg' : 'yt-dlp')) {
+          const binPath = name === 'ffmpeg'
+            ? glob.join(glob.dirname(dir), f.name, 'bin', 'ffmpeg.exe')
+            : glob.join(glob.dirname(dir), f.name, 'yt-dlp.exe');
+          if (require('fs').existsSync(binPath)) return binPath;
+        }
+      }
+    } catch(e) {}
+  }
+  return null;
+}
+
+const YT_DLP  = process.env.YT_DLP_PATH  || (IS_WIN ? (findWingetTool('yt-dlp') || path.join(__dirname, 'yt-dlp.exe')) : 'yt-dlp');
+const FFMPEG  = process.env.FFMPEG_PATH  || (IS_WIN ? (findWingetTool('ffmpeg') || 'ffmpeg') : 'ffmpeg');
+console.log(`🔧 yt-dlp: ${YT_DLP}`);
+console.log(`🔧 ffmpeg: ${FFMPEG}`);
 const ADS_DIR = path.join(__dirname, 'public', 'ads');
 if (!fs.existsSync(ADS_DIR)) fs.mkdirSync(ADS_DIR, { recursive: true });
 
