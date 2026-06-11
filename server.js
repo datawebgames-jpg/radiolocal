@@ -304,8 +304,21 @@ app.delete('/api/ads/:id', (req, res) => {
 app.post('/api/ads/play/:id', (req, res) => {
   const ad = adsList.find(a => a.id === req.params.id);
   if (!ad) return res.status(404).json({ error: 'Ad not found' });
+  // Para oyentes locales: URL directa
   io.emit('ad_play', ad);
-  relaySocket?.emit('relay_broadcast', { event: 'ad_play', data: ad });
+  // Para oyentes de Railway: streamear el archivo como audio chunks
+  if (relaySocket?.connected && ad.type === 'audio') {
+    const fp = path.join(ADS_DIR, ad.id);
+    const adProc = spawn(FFMPEG, [
+      '-re', '-i', fp, '-vn', '-c:a', 'libopus', '-b:a', '96k',
+      '-cluster_size_limit', '1M', '-cluster_time_limit', '5100',
+      '-f', 'webm', 'pipe:1',
+    ]);
+    // Emitir como evento especial para no interrumpir la pista actual
+    adProc.stdout.on('data', chunk => relaySocket.emit('broadcast_ad_chunk', chunk));
+    adProc.on('error', err => console.error('[ad-stream error]', err.message));
+    adProc.stderr.on('data', () => {});
+  }
   res.json({ ok: true });
 });
 
@@ -457,6 +470,9 @@ io.on('connection', socket => {
     radioState.status = 'playing';
     io.emit('track_change', { track: radioState.currentTrack, index: radioState.currentIndex });
     io.emit('status_change', radioState.status);
+    relaySocket?.emit('relay_event', { event: 'status_change', data: 'playing' });
+    emitRelayTrackChange(radioState.currentTrack, radioState.currentIndex);
+    startStreamingToRelay(radioState.currentTrack);
   });
 
   socket.on('disconnect', () => {
@@ -477,16 +493,14 @@ const RELAY_SECRET = process.env.RELAY_SECRET || 'pampa-secret-2025';
 
 let relaySocket = null;
 let relayStreamProc = null;
+let relayYtProc = null;
 
 function stopRelayStream() {
-  if (relayStreamProc) {
-    try { relayStreamProc.kill('SIGKILL'); } catch(e) {}
-    relayStreamProc = null;
-  }
+  if (relayYtProc)    { try { relayYtProc.kill('SIGKILL');    } catch(e) {} relayYtProc = null;    }
+  if (relayStreamProc){ try { relayStreamProc.kill('SIGKILL'); } catch(e) {} relayStreamProc = null; }
 }
 
 function extractYtUrl(trackUrl) {
-  // Admin guarda YouTube como /api/yt-stream?url=<encoded> — extraer la URL original
   if (!trackUrl) return null;
   const m = trackUrl.match(/\/api\/yt-stream\?url=(.+)/);
   if (m) return decodeURIComponent(m[1]);
@@ -502,39 +516,51 @@ function startStreamingToRelay(track) {
   const ytUrl = track.type === 'url' ? extractYtUrl(track.url) : null;
 
   if (ytUrl) {
-    console.log('[relay-stream] YouTube →', ytUrl.slice(0, 60));
-    proc = spawn(YT_DLP, [
+    console.log('[relay-stream] YouTube →', ytUrl.slice(0, 70));
+    // yt-dlp descarga → ffmpeg -re lo envía a velocidad real (1x)
+    const ytProc = spawn(YT_DLP, [
       '--no-playlist', '-f', '251/bestaudio[ext=webm]/bestaudio[acodec=opus]/bestaudio',
       '--no-part', '--no-warnings', '-o', '-', ytUrl,
     ]);
+    proc = spawn(FFMPEG, ['-re', '-i', 'pipe:0', '-vn', '-c:a', 'copy', '-f', 'webm', 'pipe:1']);
+    ytProc.stdout.pipe(proc.stdin);
+    ytProc.stderr.on('data', d => {
+      const s = d.toString();
+      if (s.includes('ERROR') || s.includes('error')) console.error('[yt-dlp]', s.trim());
+    });
+    ytProc.on('error', err => console.error('[yt-dlp error]', err.message));
+    relayYtProc = ytProc;
   } else if (track.type === 'upload' && track.file) {
     const fp = path.join(UPLOADS_DIR, track.file);
     console.log('[relay-stream] Archivo →', track.file);
+    // -re: lee el archivo a velocidad real (1x), no transcribe 150x
     proc = spawn(FFMPEG, [
-      '-i', fp, '-vn', '-c:a', 'libopus', '-b:a', '128k',
+      '-re', '-i', fp, '-vn', '-c:a', 'libopus', '-b:a', '128k',
       '-cluster_size_limit', '2M', '-cluster_time_limit', '5100',
       '-f', 'webm', 'pipe:1',
     ]);
   } else {
-    console.log('[relay-stream] Tipo no soportado para relay:', track.type, track.url?.slice(0,50));
+    console.log('[relay-stream] Tipo no soportado:', track.type);
     return;
   }
 
+  const thisProc = proc;
   relayStreamProc = proc;
-  let bytesSent = 0;
+
   proc.stdout.on('data', (chunk) => {
-    bytesSent += chunk.length;
     if (relaySocket?.connected) relaySocket.emit('broadcast_chunk', chunk);
   });
   proc.stderr.on('data', (d) => {
-    const line = d.toString().trim();
-    if (line) console.error('[relay-stream stderr]', line);
+    const s = d.toString();
+    if (s.includes('ERROR') || s.includes('error') || s.includes('Invalid')) console.error('[relay-ffmpeg]', s.trim());
   });
   proc.on('error', (err) => console.error('[relay-stream error]', err.message));
   proc.on('close', (code) => {
-    console.log(`[relay-stream] Fin (code=${code}, bytes=${bytesSent})`);
+    if (relayStreamProc !== thisProc) return; // reemplazado, ignorar
     relayStreamProc = null;
-    // auto-avanzar playlist cuando termina la pista
+    relayYtProc = null;
+    console.log(`[relay-stream] Fin pista (code=${code})`);
+    // auto-avanzar solo si sigue en modo playing
     if (radioState.status === 'playing' && radioState.playlist.length > 0) {
       setTimeout(() => {
         radioState.currentIndex = (radioState.currentIndex + 1) % radioState.playlist.length;
@@ -544,7 +570,7 @@ function startStreamingToRelay(track) {
         io.emit('status_change', 'playing');
         emitRelayTrackChange(next, radioState.currentIndex);
         startStreamingToRelay(next);
-      }, 500);
+      }, 800);
     }
   });
 }

@@ -380,6 +380,34 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// ── Publicidad en audio vía relay ──────────────────────────────────────────────
+let adMse = null, adMseBuf = null, adMseQueue = [];
+
+socket.on('ad_audio_chunk', (chunk) => {
+  if (!adMse) {
+    adMse = new MediaSource();
+    const adEl = new Audio();
+    adEl.src = URL.createObjectURL(adMse);
+    adMse.addEventListener('sourceopen', () => {
+      const mime = 'audio/webm;codecs=opus';
+      if (!MediaSource.isTypeSupported(mime)) return;
+      adMseBuf = adMse.addSourceBuffer(mime);
+      adMseBuf.mode = 'sequence';
+      adMseBuf.addEventListener('updateend', flushAdMSE);
+      flushAdMSE();
+    });
+    adEl.play().catch(() => {});
+    adEl.onended = () => { adMse = null; adMseBuf = null; adMseQueue = []; };
+  }
+  adMseQueue.push(chunk instanceof ArrayBuffer ? chunk : chunk.buffer);
+  flushAdMSE();
+});
+
+function flushAdMSE() {
+  if (!adMseBuf || adMseBuf.updating || adMseQueue.length === 0) return;
+  try { adMseBuf.appendBuffer(adMseQueue.shift()); } catch(e) {}
+}
+
 // ── Notificación de donación recibida ──────────────────────────────────────────────
 socket.on('donation_received', ({ donorName, amount, currency }) => {
   const el  = document.getElementById('donationAlert');

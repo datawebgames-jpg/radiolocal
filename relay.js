@@ -41,7 +41,7 @@ io.on('connection', (socket) => {
     // Informar al broadcaster cuántos oyentes hay
     broadcaster.emit('listeners_count', listenersCount);
 
-    // Broadcaster → listeners: chunks de audio
+    // Broadcaster → listeners: chunks de audio de pista
     socket.on('broadcast_chunk', (chunk) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (trackChunksSize < MAX_TRACK_BUFFER) {
@@ -49,6 +49,11 @@ io.on('connection', (socket) => {
         trackChunksSize += buf.length;
       }
       socket.broadcast.emit('live_audio_chunk', buf);
+    });
+
+    // Broadcaster → listeners: chunks de publicidad (audio aparte)
+    socket.on('broadcast_ad_chunk', (chunk) => {
+      socket.broadcast.emit('ad_audio_chunk', chunk);
     });
 
     // Broadcaster → listeners: eventos de estado
