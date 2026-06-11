@@ -42,9 +42,8 @@ function setVolume(v) {
 function loadInitialTrack(url) {
   if (!url) return;
   currentTrackUrl = url;
-  // NO seteamos activeEl.src aquí — se setea en togglePlay() DESPUÉS de
-  // crear los MediaElementAudioSourceNodes en setupAudioContext(), para
-  // evitar audio silencioso por el bug de createMediaElementSource + src ya cargando
+  activeEl.src = url;
+  activeEl.load();
 }
 
 // Cambia o mezcla al siguiente tema
@@ -53,7 +52,9 @@ function crossfadeTo(url) {
   currentTrackUrl = url;
 
   if (!isPlaying) {
-    // No estaba reproduciendo: solo guardamos la URL, el src se setea en togglePlay()
+    // No estaba reproduciendo: solo cargamos en el elemento activo
+    activeEl.src = url;
+    activeEl.load();
     return;
   }
 
@@ -95,12 +96,6 @@ async function togglePlay() {
   } else {
     // En modo live, asegurarse de que el MSE esté listo
     if (liveMode && !mse) setupMSE(false);
-    // Setear src DESPUÉS de setupAudioContext() para evitar audio silencioso
-    // (createMediaElementSource requiere que el elemento no esté cargando aún)
-    if (!liveMode && currentTrackUrl && activeEl.src !== currentTrackUrl) {
-      activeEl.src = currentTrackUrl;
-      activeEl.load();
-    }
     await activeEl.play().catch(() => {});
     isPlaying = true;
     document.getElementById('btnPlay').textContent = '⏸ Pausar';
