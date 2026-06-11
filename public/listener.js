@@ -301,6 +301,7 @@ function setupMSE(autoplay = false) {
   const mime = 'audio/webm;codecs=opus';
   mse.addEventListener('sourceopen', () => {
     if (mse !== thisMse || thisMse.readyState !== 'open') return;
+    if (mseSrcBuf) return;
     if (!MediaSource.isTypeSupported(mime)) return;
     mseSrcBuf = mse.addSourceBuffer(mime);
     mseSrcBuf.mode = 'sequence';
