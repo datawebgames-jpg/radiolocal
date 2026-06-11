@@ -1,0 +1,55 @@
+<icecast>
+  <location>Radio Local</location>
+  <admin>admin@radiolocal.local</admin>
+
+  <limits>
+    <clients>50</clients>
+    <sources>2</sources>
+    <queue-size>524288</queue-size>
+    <client-timeout>30</client-timeout>
+    <header-timeout>15</header-timeout>
+    <source-timeout>10</source-timeout>
+    <burst-on-connect>1</burst-on-connect>
+    <burst-size>65536</burst-size>
+  </limits>
+
+  <authentication>
+    <!-- Contraseña que usa OBS/Butt para conectarse como fuente -->
+    <source-password>radiolocal2024</source-password>
+    <!-- Contraseña del panel admin de Icecast -->
+    <admin-user>admin</admin-user>
+    <admin-password>radiolocal2024</admin-password>
+  </authentication>
+
+  <hostname>192.168.1.42</hostname>
+
+  <listen-socket>
+    <port>8000</port>
+  </listen-socket>
+
+  <!-- Acepta conexiones desde cualquier IP local -->
+  <security>
+    <chroot>0</chroot>
+  </security>
+
+  <paths>
+    <!-- En Windows, Icecast instala en C:\Program Files\Icecast -->
+    <basedir>C:\Program Files\Icecast</basedir>
+    <logdir>C:\Program Files\Icecast\log</logdir>
+    <webroot>C:\Program Files\Icecast\web</webroot>
+    <adminroot>C:\Program Files\Icecast\admin</adminroot>
+  </paths>
+
+  <logging>
+    <accesslog>access.log</accesslog>
+    <errorlog>error.log</errorlog>
+    <loglevel>3</loglevel>
+    <logsize>10000</logsize>
+  </logging>
+
+  <http-headers>
+    <header name="Access-Control-Allow-Origin" value="*" />
+    <header name="Access-Control-Allow-Headers" value="Origin, Accept, X-Requested-With, Content-Type" />
+    <header name="Access-Control-Allow-Methods" value="GET, OPTIONS, HEAD" />
+  </http-headers>
+</icecast>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Micrófono Remoto — Radio Local</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #0d0d0f; color: #f0f0f0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: #18181c; border: 1px solid #2a2a32; border-radius: 16px;
+    padding: 32px; width: 340px; text-align: center;
+  }
+  .icon { font-size: 3rem; margin-bottom: 12px; }
+  h1 { font-size: 1.3rem; margin-bottom: 6px; }
+  .status { font-size: .9rem; color: #888; margin-bottom: 24px; min-height: 1.4em; }
+  .status.live { color: #4ade80; }
+  button {
+    width: 100%; padding: 14px; border-radius: 10px; border: none;
+    font-size: 1rem; font-weight: 600; cursor: pointer; margin-bottom: 10px;
+  }
+  .btn-start { background: #e63946; color: #fff; }
+  .btn-stop  { background: #333; color: #f0f0f0; }
+  .meter-wrap {
+    margin-top: 16px; background: #222228; border-radius: 6px;
+    height: 10px; overflow: hidden;
+  }
+  .meter-bar {
+    height: 100%; width: 0%; background: #2ecc71;
+    border-radius: 6px; transition: width .1s;
+  }
+  .hint { font-size: .75rem; color: #666; margin-top: 16px; line-height: 1.5; }
+  select {
+    width: 100%; padding: 10px; background: #222228; color: #f0f0f0;
+    border: 1px solid #2a2a32; border-radius: 8px; margin-bottom: 12px;
+    font-size: .9rem;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">🎙️</div>
+  <h1>Micrófono Remoto</h1>
+  <div class="status" id="status">Desconectado del aire</div>
+
+  <select id="audioSource"></select>
+
+  <button class="btn-start" id="btnStart" onclick="startMic()">🎙️ Activar Micrófono</button>
+  <button class="btn-stop"  id="btnStop"  onclick="stopMic()" style="display:none">⏹ Detener</button>
+
+  <div class="meter-wrap"><div class="meter-bar" id="meterBar"></div></div>
+
+  <p class="hint">
+    Abrí esta página en cualquier PC de tu red.<br>
+    El audio llega directo a la Mesa DJ del admin.
+  </p>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+socket.emit('remote_mic_identify');
+
+let mediaRecorder = null, stream = null;
+let meterAnalyser = null, meterAnim = null;
+const audioCtx = new AudioContext();
+
+// Listar micrófonos disponibles
+(async function loadDevices() {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const sel = document.getElementById('audioSource');
+    sel.innerHTML = '';
+    devices.filter(d => d.kind === 'audioinput').forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || `Micrófono ${sel.options.length + 1}`;
+      sel.appendChild(o);
+    });
+  } catch(e) {}
+})();
+
+async function startMic() {
+  try {
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    const deviceId = document.getElementById('audioSource').value;
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: deviceId ? { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true } : true
+    });
+
+    meterAnalyser = audioCtx.createAnalyser();
+    meterAnalyser.fftSize = 256;
+    audioCtx.createMediaStreamSource(stream).connect(meterAnalyser);
+    drawMeter();
+
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    mediaRecorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128000 });
+    mediaRecorder.ondataavailable = async e => {
+      if (e.data.size > 0) socket.emit('remote_mic_chunk', await e.data.arrayBuffer());
+    };
+    mediaRecorder.start(250);
+
+    document.getElementById('status').textContent = '🔴 En el aire';
+    document.getElementById('status').className = 'status live';
+    document.getElementById('btnStart').style.display = 'none';
+    document.getElementById('btnStop').style.display = '';
+    document.querySelector('.icon').textContent = '🔴';
+  } catch(e) {
+    document.getElementById('status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function stopMic() {
+  if (mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (meterAnim) { cancelAnimationFrame(meterAnim); meterAnim = null; }
+  document.getElementById('meterBar').style.width = '0%';
+  document.getElementById('status').textContent = 'Desconectado del aire';
+  document.getElementById('status').className = 'status';
+  document.getElementById('btnStart').style.display = '';
+  document.getElementById('btnStop').style.display = 'none';
+  document.querySelector('.icon').textContent = '🎙️';
+}
+
+function drawMeter() {
+  if (!meterAnalyser) return;
+  const data = new Uint8Array(meterAnalyser.frequencyBinCount);
+  meterAnalyser.getByteFrequencyData(data);
+  const avg = data.reduce((a, b) => a + b, 0) / data.length;
+  document.getElementById('meterBar').style.width = Math.min(100, avg * 2) + '%';
+  meterAnim = requestAnimationFrame(drawMeter);
+}
+</script>
+</body>
+</html>

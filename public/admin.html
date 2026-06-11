@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Radio Local</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="admin-page">
+
+<div class="admin-app">
+
+  <!-- SIDEBAR -->
+  <aside class="admin-sidebar">
+    <div class="admin-logo">🎙️</div>
+    <h2 id="stationNameAdmin">Mi Radio Local</h2>
+    <div class="status-indicator" id="statusIndicator">
+      <span class="dot off"></span> <span id="statusLabel">Offline</span>
+    </div>
+    <div class="listeners-info">👥 <span id="listenersCount">0</span> oyentes</div>
+    <hr>
+    <nav>
+      <button class="nav-btn active" onclick="showPanel('playlist')">📂 Playlist</button>
+      <button class="nav-btn" onclick="showPanel('live')">📡 En Vivo</button>
+      <button class="nav-btn" onclick="showPanel('dj')">🎛️ Mesa DJ</button>
+      <button class="nav-btn" onclick="showPanel('ads')">📢 Publicidades</button>
+      <button class="nav-btn" onclick="showPanel('stream')">📺 Transmisión</button>
+      <button class="nav-btn" onclick="showPanel('settings')">⚙️ Ajustes</button>
+    </nav>
+    <hr>
+    <div style="padding:0 8px 8px">
+      <button class="nav-btn monitor-btn" id="btnMonitor" onclick="toggleMonitor()" style="width:100%;background:#1a1a22;border:1px solid #e6394630">🔇 Monitor: OFF</button>
+      <div id="remoteMicIndicator" style="display:none;margin-top:6px;font-size:.75rem;color:#4ade80;text-align:center">🎙️ Mic remoto conectado</div>
+    </div>
+    <hr>
+    <div class="sidebar-chat">
+      <div class="chat-header">💬 Chat</div>
+      <div class="chat-messages small" id="chatMessages"></div>
+      <div class="chat-input-wrap">
+        <input type="text" id="chatText" placeholder="Mensaje como DJ..." maxlength="300" onkeydown="if(event.key==='Enter')sendChat()">
+        <button onclick="sendChat()">▶</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- MAIN CONTENT -->
+  <main class="admin-main">
+
+    <!-- PANEL: PLAYLIST -->
+    <section class="panel active" id="panel-playlist">
+      <h3>📂 Gestión de Playlist</h3>
+
+      <div class="upload-zone" id="dropZone">
+        <div>⬆️ Arrastrá archivos MP3 / OGG / WAV acá</div>
+        <div class="upload-sub">o hacé clic para buscar</div>
+        <input type="file" id="fileInput" multiple accept="audio/*" style="display:none" onchange="uploadFiles(this.files)">
+        <button class="btn-secondary" onclick="document.getElementById('fileInput').click()">Seleccionar archivos</button>
+      </div>
+
+      <div class="url-add">
+        <input type="text" id="urlInput" placeholder="URL de YouTube, stream o audio (https://...)" oninput="onUrlInput(this.value)">
+        <input type="text" id="urlName" placeholder="Nombre (se auto-completa con YouTube)">
+        <button class="btn-primary" onclick="addUrl()">➕ Agregar</button>
+      </div>
+      <div id="ytPreview" style="display:none" class="yt-preview">
+        <img id="ytThumb" src="" alt="">
+        <div class="yt-info">
+          <div id="ytTitle" class="yt-title"></div>
+          <div id="ytDur" class="yt-dur"></div>
+        </div>
+      </div>
+
+      <div class="now-playing-admin" id="nowPlayingAdmin">
+        <span class="np-label">▶ Ahora:</span>
+        <span id="npTrackName">— nada —</span>
+      </div>
+
+      <div class="playlist-controls">
+        <button class="btn-danger" onclick="stopRadio()">⏹ Detener</button>
+        <button class="btn-success" onclick="nextTrack()">⏭ Siguiente</button>
+      </div>
+
+      <div class="playlist-list" id="playlistList">
+        <!-- se llena dinámicamente -->
+      </div>
+    </section>
+
+    <!-- PANEL: EN VIVO -->
+    <section class="panel" id="panel-live">
+      <h3>📡 Transmisión en Vivo</h3>
+
+      <!-- OPCIÓN A: Desde el navegador (recomendado) -->
+      <div class="live-card" id="browserLiveCard">
+        <div class="live-card-title">🎙️ Opción A — En vivo desde este navegador <span class="badge-rec">RECOMENDADO</span></div>
+        <p class="hint">Captura el micrófono (y el audio del sistema si elegís "compartir pantalla con audio") y lo transmite directo a los oyentes. Sin instalar nada.</p>
+
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group">
+            <label>Fuente de audio</label>
+            <select id="audioSource"></select>
+          </div>
+          <div class="form-group">
+            <label>Calidad</label>
+            <select id="audioBitrate">
+              <option value="64000">64 kbps (liviano)</option>
+              <option value="128000" selected>128 kbps (normal)</option>
+              <option value="192000">192 kbps (alta)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="live-meter-wrap">
+          <span style="font-size:.75rem;color:var(--muted)">NIVEL MIC</span>
+          <div class="live-meter"><div class="live-meter-bar" id="meterBar"></div></div>
+        </div>
+
+        <div class="live-btn-row">
+          <button class="btn-success big" id="btnBrowserLive" onclick="startBrowserLive()">🎙️ ¡IR AL AIRE!</button>
+          <button class="btn-danger" id="btnStopBrowserLive" onclick="stopBrowserLive()" style="display:none">⏹ Cortar</button>
+        </div>
+      </div>
+
+      <!-- OPCIÓN B: Stream externo -->
+      <div class="live-card">
+        <div class="live-card-title">📡 Opción B — Stream externo (Icecast / Shoutcast)</div>
+        <p class="hint">Conectá un stream externo usando OBS, Mixxx o cualquier software de broadcast.</p>
+        <div class="form-group">
+          <label>URL del stream</label>
+          <input type="text" id="liveUrl" placeholder="http://192.168.1.42:8000/live">
+        </div>
+        <button class="btn-success" onclick="goLive()">📡 Conectar stream externo</button>
+        <button class="btn-danger" onclick="stopRadio()">⏹ Cortar señal</button>
+      </div>
+    </section>
+
+    <!-- PANEL: MESA DJ -->
+    <section class="panel" id="panel-dj">
+      <h3>🎛️ Mesa de Mezcla DJ</h3>
+      <p class="hint" style="margin-bottom:16px">Mezclá dos temas en vivo. La salida se emite directo a los oyentes.</p>
+
+      <div class="dj-decks">
+        <!-- DECK A -->
+        <div class="dj-deck" id="deckA-card">
+          <div class="dj-deck-label">DECK A</div>
+          <div class="dj-track-name" id="deckAName">— vacío —</div>
+          <div class="form-row" style="gap:6px;flex-wrap:wrap">
+            <select id="deckASelect" style="flex:1;min-width:0" onchange="loadDeckFromSelect('A')">
+              <option value="">Elegir de playlist…</option>
+            </select>
+            <input type="text" id="deckAUrl" placeholder="o URL directa…" style="flex:1;min-width:0">
+            <button class="btn-secondary" onclick="loadDeckFromUrl('A')">Cargar</button>
+          </div>
+          <div class="dj-controls">
+            <button class="btn-success" id="deckAPlayBtn" onclick="toggleDeck('A')">▶ Play</button>
+            <button class="btn-secondary" onclick="cueDeck('A')">⏮ Cue</button>
+            <label style="font-size:.8rem;color:var(--muted)">Vol</label>
+            <input type="range" id="deckAVol" min="0" max="1" step="0.01" value="1" oninput="setDeckVol('A',this.value)" style="width:80px">
+          </div>
+          <div class="dj-pitch-row">
+            <label style="font-size:.75rem;color:var(--muted)">Pitch</label>
+            <input type="range" id="deckAPitch" min="0.5" max="2" step="0.01" value="1" oninput="setDeckPitch('A',this.value)" style="flex:1">
+            <span id="deckAPitchVal" style="font-size:.75rem;width:32px">1.00</span>
+          </div>
+        </div>
+
+        <!-- CROSSFADER + MIC -->
+        <div class="dj-center">
+          <div class="dj-xfade-label"><span>A</span><span>B</span></div>
+          <input type="range" id="djCrossfader" min="0" max="100" value="50"
+            oninput="updateDJCrossfade(this.value)" class="dj-crossfader">
+          <div class="dj-auto-btns">
+            <button class="btn-secondary" onclick="autoCrossfade(100,0)">← A</button>
+            <button class="btn-secondary" onclick="autoCrossfade(0,100)">B →</button>
+          </div>
+          <hr style="border-color:#2a2a32;margin:12px 0">
+          <div style="font-size:.78rem;color:var(--muted);margin-bottom:6px">MICRÓFONOS</div>
+          <label class="dj-mic-row">
+            <input type="checkbox" id="chkLocalMic" onchange="toggleDJLocalMic(this.checked)"> 🎙️ Este PC
+          </label>
+          <label class="dj-mic-row">
+            <input type="checkbox" id="chkRemoteMic" onchange="toggleDJRemoteMic(this.checked)"> 🖥️ PC remota
+            <span id="remoteMicDot" style="color:#666;font-size:.7rem"> ●</span>
+          </label>
+          <div style="margin-top:4px;font-size:.7rem;color:var(--muted)" id="remoteMicUrl"></div>
+        </div>
+
+        <!-- DECK B -->
+        <div class="dj-deck" id="deckB-card">
+          <div class="dj-deck-label">DECK B</div>
+          <div class="dj-track-name" id="deckBName">— vacío —</div>
+          <div class="form-row" style="gap:6px;flex-wrap:wrap">
+            <select id="deckBSelect" style="flex:1;min-width:0" onchange="loadDeckFromSelect('B')">
+              <option value="">Elegir de playlist…</option>
+            </select>
+            <input type="text" id="deckBUrl" placeholder="o URL directa…" style="flex:1;min-width:0">
+            <button class="btn-secondary" onclick="loadDeckFromUrl('B')">Cargar</button>
+          </div>
+          <div class="dj-controls">
+            <button class="btn-success" id="deckBPlayBtn" onclick="toggleDeck('B')">▶ Play</button>
+            <button class="btn-secondary" onclick="cueDeck('B')">⏮ Cue</button>
+            <label style="font-size:.8rem;color:var(--muted)">Vol</label>
+            <input type="range" id="deckBVol" min="0" max="1" step="0.01" value="1" oninput="setDeckVol('B',this.value)" style="width:80px">
+          </div>
+          <div class="dj-pitch-row">
+            <label style="font-size:.75rem;color:var(--muted)">Pitch</label>
+            <input type="range" id="deckBPitch" min="0.5" max="2" step="0.01" value="1" oninput="setDeckPitch('B',this.value)" style="flex:1">
+            <span id="deckBPitchVal" style="font-size:.75rem;width:32px">1.00</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- BROADCAST BAR -->
+      <div class="dj-broadcast-bar">
+        <button class="btn-secondary" id="btnDJMonitor" onclick="toggleDJMonitor()">🔇 Auriculares: OFF</button>
+        <button class="btn-success big" id="btnDJBroadcast" onclick="startDJBroadcast()">🔴 EMITIR MEZCLA</button>
+        <button class="btn-danger" id="btnDJStop" onclick="stopDJBroadcast()" style="display:none">⏹ Cortar</button>
+      </div>
+    </section>
+
+    <!-- PANEL: TRANSMISIÓN (pantalla, webcam, TikTok) -->
+    <section class="panel" id="panel-stream">
+      <h3>📺 Transmisión de Video</h3>
+
+      <div class="live-card">
+        <div class="live-card-title">🖥️ Compartir Pantalla / Juego</div>
+        <p class="hint">Los oyentes ven tu pantalla en tiempo real mientras escuchan la radio.</p>
+        <div class="form-row" style="gap:10px;align-items:center">
+          <select id="streamSourceSel" style="flex:1">
+            <option value="screen">🖥️ Pantalla completa</option>
+            <option value="window">🪟 Ventana específica</option>
+            <option value="camera">📷 Cámara web</option>
+            <option value="camera_screen">📷+🖥️ Cámara + pantalla</option>
+          </select>
+          <select id="streamQuality">
+            <option value="720">720p</option>
+            <option value="1080">1080p</option>
+            <option value="480">480p (liviano)</option>
+          </select>
+        </div>
+        <video id="adminPreview" muted autoplay playsinline style="width:100%;max-height:200px;background:#000;border-radius:8px;margin:8px 0;display:none"></video>
+        <div class="live-btn-row">
+          <button class="btn-success big" id="btnStartStream" onclick="startScreenShare()">📺 Iniciar transmisión</button>
+          <button class="btn-danger" id="btnStopStream" onclick="stopScreenShare()" style="display:none">⏹ Detener</button>
+        </div>
+      </div>
+
+      <div class="live-card" style="margin-top:14px">
+        <div class="live-card-title">🔴 Restream a TikTok / YouTube Live / Twitch</div>
+        <p class="hint">Transmite simultáneamente a cualquier plataforma que use RTMP. Necesitás tu clave de stream.</p>
+        <div class="form-group">
+          <label>Plataforma</label>
+          <select id="rtmpPlatform" onchange="updateRtmpUrl()">
+            <option value="tiktok">TikTok Live</option>
+            <option value="youtube">YouTube Live</option>
+            <option value="twitch">Twitch</option>
+            <option value="custom">URL personalizada</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Clave de stream (Stream Key)</label>
+          <input type="password" id="rtmpKey" placeholder="Pegá tu stream key aquí">
+        </div>
+        <div class="form-group" id="rtmpCustomWrap" style="display:none">
+          <label>URL RTMP completa</label>
+          <input type="text" id="rtmpCustomUrl" placeholder="rtmp://...">
+        </div>
+        <div id="rtmpStatus" style="font-size:.8rem;color:var(--muted);margin-bottom:8px"></div>
+        <div class="live-btn-row">
+          <button class="btn-success" id="btnRtmpStart" onclick="startRtmp()">🔴 Iniciar restream</button>
+          <button class="btn-danger"  id="btnRtmpStop"  onclick="stopRtmp()" style="display:none">⏹ Detener restream</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- PANEL: PUBLICIDADES -->
+    <section class="panel" id="panel-ads">
+      <h3>📢 Publicidades</h3>
+
+      <!-- TABS dentro del panel -->
+      <div class="ad-tabs">
+        <button class="ad-tab active" onclick="switchAdTab('voice',this)">🗣️ Voz en off</button>
+        <button class="ad-tab" onclick="switchAdTab('file',this)">🎵 Archivo / Grabación</button>
+        <button class="ad-tab" onclick="switchAdTab('ai',this)">🤖 IA Argentina/BR</button>
+      </div>
+
+      <!-- TAB: Voz en off (Web Speech, browser) -->
+      <div class="ad-tab-panel active" id="adtab-voice">
+        <div class="ad-form">
+          <div class="form-group">
+            <label>Texto de la publicidad</label>
+            <textarea id="adText" rows="4" placeholder="Ej: Visitá La Ferretería Don Juan en Av. San Martín 450. ¡Lunes a sábados de 8 a 20hs!"></textarea>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Voz del navegador</label>
+              <select id="adVoice"></select>
+            </div>
+            <div class="form-group">
+              <label>Velocidad</label>
+              <input type="range" id="adRate" min="0.5" max="2" step="0.1" value="1">
+              <span id="adRateLabel">1x</span>
+            </div>
+            <div class="form-group">
+              <label>Tono</label>
+              <input type="range" id="adPitch" min="0.5" max="2" step="0.1" value="1">
+              <span id="adPitchLabel">1</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Banner visual</label>
+            <input type="text" id="adBanner" placeholder="🛒 Ferretería Don Juan — Av. San Martín 450">
+          </div>
+          <div class="ad-btn-row">
+            <button class="btn-secondary" onclick="previewAd()">🔊 Vista previa</button>
+            <button class="btn-primary" onclick="broadcastAd()">📢 Emitir al aire</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- TAB: Archivo / Grabación -->
+      <div class="ad-tab-panel" id="adtab-file">
+        <div class="live-card">
+          <div class="live-card-title">📁 Subir audio o video de publicidad</div>
+          <input type="file" id="adFileInput" accept="audio/*,video/*" style="display:none" onchange="uploadAdFile(this.files[0])">
+          <div class="form-group"><input type="text" id="adFileName" placeholder="Nombre de la publicidad"></div>
+          <div class="live-btn-row">
+            <button class="btn-secondary" onclick="document.getElementById('adFileInput').click()">📂 Elegir archivo</button>
+            <button class="btn-secondary" id="btnRecordAd" onclick="toggleRecordAd()">⏺ Grabar voz</button>
+          </div>
+          <div id="recordAdStatus" style="font-size:.8rem;color:var(--muted);margin-top:6px"></div>
+        </div>
+        <div class="live-card" style="margin-top:12px">
+          <div class="live-card-title">🗂️ Biblioteca de publicidades</div>
+          <div id="adLibrary" style="display:flex;flex-direction:column;gap:8px;margin-top:8px"></div>
+        </div>
+        <div class="live-card" style="margin-top:12px">
+          <div class="live-card-title">⏱ Rotación automática</div>
+          <div class="form-row" style="align-items:center;gap:10px">
+            <label style="font-size:.85rem">Cada</label>
+            <input type="number" id="adFileInterval" min="1" max="120" value="30" style="width:70px">
+            <label style="font-size:.85rem">min</label>
+            <button class="btn-secondary" onclick="startAdRotation()">▶ Iniciar</button>
+            <button class="btn-danger" onclick="stopAdRotation()">⏹ Detener</button>
+          </div>
+          <div id="adRotationStatus" style="font-size:.8rem;color:var(--muted);margin-top:6px"></div>
+        </div>
+      </div>
+
+      <!-- TAB: IA Argentina/Brasil -->
+      <div class="ad-tab-panel" id="adtab-ai">
+        <div class="live-card">
+          <div class="live-card-title">🤖 Voz con IA — Natural, sin robótica</div>
+          <p class="hint">Usá ElevenLabs o Azure para voces que suenan como personas reales en español argentino o portugués brasileño.</p>
+          <div class="form-row">
+            <div class="form-group" style="flex:1">
+              <label>Proveedor</label>
+              <select id="ttsProvider" onchange="updateTTSVoices()">
+                <option value="elevenlabs">ElevenLabs (mejor calidad)</option>
+                <option value="azure">Azure Neural (argentino/brasileño nativo)</option>
+              </select>
+            </div>
+            <div class="form-group" style="flex:1">
+              <label>Voz</label>
+              <select id="ttsVoice"></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>API Key <span style="font-size:.72rem;color:var(--muted)">(se guarda solo en tu navegador)</span></label>
+            <input type="password" id="ttsApiKey" placeholder="Pegá tu API key aquí" oninput="saveTTSKey()">
+            <a id="ttsKeyLink" href="https://elevenlabs.io" target="_blank" style="font-size:.75rem;color:var(--accent)">Obtener API key gratis →</a>
+          </div>
+          <div id="ttsRegionRow" class="form-group" style="display:none">
+            <label>Región Azure</label>
+            <select id="ttsRegion">
+              <option value="eastus">East US</option>
+              <option value="brazilsouth">Brazil South</option>
+              <option value="westeurope">West Europe</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Texto del anuncio</label>
+            <textarea id="ttsText" rows="4" placeholder="Texto que va a leer la IA con voz natural…"></textarea>
+          </div>
+          <div class="ad-btn-row">
+            <button class="btn-secondary" onclick="previewTTS()">🔊 Escuchar</button>
+            <button class="btn-primary" onclick="broadcastTTS()">📢 Emitir al aire</button>
+          </div>
+          <div id="ttsStatus" style="font-size:.8rem;color:var(--muted);margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Programador global (aplica a voz en off) -->
+      <div class="ad-schedule" style="margin-top:16px">
+        <h4>Programar voz-en-off automática</h4>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Cada (minutos)</label>
+            <input type="number" id="adInterval" min="1" max="120" value="30">
+          </div>
+          <button class="btn-secondary" onclick="scheduleAd()">⏱ Programar</button>
+          <button class="btn-danger" onclick="cancelSchedule()">✕ Cancelar</button>
+        </div>
+        <div id="scheduleStatus" class="schedule-status"></div>
+      </div>
+    </section>
+
+    <!-- PANEL: AJUSTES -->
+    <section class="panel" id="panel-settings">
+      <h3>⚙️ Ajustes de la Radio</h3>
+      <div class="form-group">
+        <label>Nombre de la emisora</label>
+        <input type="text" id="stationNameInput" placeholder="Mi Radio Local" value="Mi Radio Local">
+        <button class="btn-primary" onclick="saveStationName()">Guardar</button>
+      </div>
+
+      <div class="live-card" style="margin-top:16px">
+        <div class="live-card-title">💜 Botón de Donaciones</div>
+        <p class="hint">El botón aparece flotante en la página de los oyentes.</p>
+        <div class="form-group">
+          <label>Alias Mercado Pago</label>
+          <input type="text" id="donateAlias" value="danielmfaggi" placeholder="tualias">
+        </div>
+        <div class="form-group">
+          <label>Access Token MP <span style="font-size:.72rem;color:var(--muted)">(para detectar donaciones automáticamente)</span></label>
+          <input type="password" id="mpToken" placeholder="APP_USR-…" oninput="saveMPToken()">
+          <a href="https://www.mercadopago.com.ar/developers/panel/app" target="_blank" style="font-size:.75rem;color:var(--accent)">Obtener en MP Developers →</a>
+        </div>
+        <div class="form-group" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.8rem;color:var(--muted)">
+          <strong style="color:var(--text)">Webhook URL para configurar en MP:</strong><br>
+          <span id="webhookUrl" style="font-family:monospace;word-break:break-all">Cargando…</span>
+        </div>
+        <button class="btn-primary" onclick="saveDonateSettings()">Guardar</button>
+      </div>
+
+      <div class="settings-links" style="margin-top:16px">
+        <a href="/" target="_blank" class="btn-secondary">👁 Ver como oyente</a>
+        <a href="/remote-mic.html" target="_blank" class="btn-secondary">🎙️ Mic remoto</a>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<audio id="audioPlayer" crossorigin="anonymous"></audio>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="admin.js"></script>
+</body>
+</html>

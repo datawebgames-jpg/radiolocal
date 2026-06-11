@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Radio Local</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body class="listener-page">
+
+<div class="radio-app">
+
+  <!-- HEADER -->
+  <header class="radio-header">
+    <div class="on-air-badge" id="onAirBadge">● OFF</div>
+    <h1 id="stationName">Mi Radio Local</h1>
+    <div class="listeners-badge">
+      <span>👥</span> <span id="listenersCount">0</span>
+    </div>
+  </header>
+
+  <!-- VISUALIZER -->
+  <div class="visualizer-wrap">
+    <canvas id="visualizer" width="600" height="120"></canvas>
+    <div class="cover-art" id="coverArt">
+      <div class="cover-icon">📻</div>
+    </div>
+  </div>
+
+  <!-- NOW PLAYING -->
+  <div class="now-playing">
+    <div class="track-label">EN EL AIRE</div>
+    <div class="track-name" id="trackName">— Sin señal —</div>
+  </div>
+
+  <!-- PLAYER CONTROLS (oyente solo tiene volumen) -->
+  <div class="player-controls">
+    <button class="btn-play-main" id="btnPlay" onclick="togglePlay()">▶ Escuchar</button>
+    <div class="volume-wrap">
+      <span>🔊</span>
+      <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" oninput="setVolume(this.value)">
+    </div>
+  </div>
+
+  <!-- AUDIO ELEMENTS para crossfade (ocultos) -->
+  <audio id="audioPlayer"  crossorigin="anonymous"></audio>
+  <audio id="audioPlayerB" crossorigin="anonymous"></audio>
+
+  <!-- AD BANNER (texto + audio/video) -->
+  <div class="ad-banner" id="adBanner" style="display:none">
+    <div class="ad-content" id="adContent"></div>
+  </div>
+  <video id="adVideo" style="display:none;width:100%;max-width:480px;border-radius:12px;margin:8px auto;display:none" controls autoplay></video>
+
+  <!-- PANTALLA COMPARTIDA / WEBCAM -->
+  <div id="screenShareWrap" style="display:none;margin:12px 0">
+    <div style="font-size:.75rem;color:var(--muted);margin-bottom:6px">📺 Pantalla del DJ</div>
+    <video id="screenVideo" autoplay muted playsinline style="width:100%;border-radius:12px;background:#000;max-height:300px"></video>
+  </div>
+
+  <!-- CHAT -->
+  <div class="chat-section">
+    <div class="chat-header">
+      <span>💬 Chat en vivo</span>
+    </div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input-wrap">
+      <input type="text" id="chatUser" placeholder="Tu nombre" maxlength="20">
+      <input type="text" id="chatText" placeholder="Escribe algo..." maxlength="300" onkeydown="if(event.key==='Enter')sendChat()">
+      <button onclick="sendChat()">Enviar</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- WHATSAPP -->
+<a class="whatsapp-btn" href="https://wa.me/5492954368999" target="_blank" rel="noopener" title="Contacto por WhatsApp">
+  <svg viewBox="0 0 24 24" fill="currentColor" width="22" height="22"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+  Publicidad / Contacto
+</a>
+
+<!-- DONACIONES -->
+<button class="donate-btn" onclick="openDonate()">💜 Donar</button>
+
+<!-- OVERLAY DONACIÓN RECIBIDA -->
+<div id="donationAlert" class="donation-alert" style="display:none">
+  <div class="donation-alert-inner">
+    <div class="da-heart">💜</div>
+    <div class="da-title">¡Gracias por apoyar la radio!</div>
+    <div class="da-sub" id="donationAlertMsg">Tu donación ayuda a mantener la radio on!</div>
+  </div>
+</div>
+
+<div id="donateModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeDonate()">
+  <div class="modal-box">
+    <button class="modal-close" onclick="closeDonate()">✕</button>
+    <div class="donate-icon">💜</div>
+    <h2>Apoyá la radio</h2>
+    <p>Si disfrutás del contenido, podés colaborar con lo que quieras.</p>
+    <div class="donate-alias">
+      <span class="donate-label">Alias Mercado Pago</span>
+      <div class="donate-alias-value" onclick="copyAlias()">danielmfaggi <span id="copyHint">📋</span></div>
+    </div>
+    <a class="btn-donate-mp" href="https://link.mercadopago.com.ar/danielmfaggi" target="_blank" rel="noopener">
+      Abrir en Mercado Pago
+    </a>
+    <div id="donateQR" style="margin-top:14px;text-align:center"></div>
+    <p style="font-size:.72rem;color:var(--muted);margin-top:10px">¡Gracias por tu apoyo! 🙏</p>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="listener.js"></script>
+</body>
+</html>
