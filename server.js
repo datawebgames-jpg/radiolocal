@@ -485,34 +485,54 @@ function stopRelayStream() {
   }
 }
 
+function extractYtUrl(trackUrl) {
+  // Admin guarda YouTube como /api/yt-stream?url=<encoded> — extraer la URL original
+  if (!trackUrl) return null;
+  const m = trackUrl.match(/\/api\/yt-stream\?url=(.+)/);
+  if (m) return decodeURIComponent(m[1]);
+  if (isYouTubeUrl(trackUrl)) return trackUrl;
+  return null;
+}
+
 function startStreamingToRelay(track) {
   stopRelayStream();
   if (!relaySocket?.connected || !track) return;
 
   let proc;
-  if (track.type === 'url' && isYouTubeUrl(track.url)) {
+  const ytUrl = track.type === 'url' ? extractYtUrl(track.url) : null;
+
+  if (ytUrl) {
+    console.log('[relay-stream] YouTube →', ytUrl.slice(0, 60));
     proc = spawn(YT_DLP, [
       '--no-playlist', '-f', '251/bestaudio[ext=webm]/bestaudio[acodec=opus]/bestaudio',
-      '--no-part', '--no-warnings', '-o', '-', track.url,
+      '--no-part', '--no-warnings', '-o', '-', ytUrl,
     ]);
   } else if (track.type === 'upload' && track.file) {
     const fp = path.join(UPLOADS_DIR, track.file);
+    console.log('[relay-stream] Archivo →', track.file);
     proc = spawn(FFMPEG, [
       '-i', fp, '-vn', '-c:a', 'libopus', '-b:a', '128k',
       '-cluster_size_limit', '2M', '-cluster_time_limit', '5100',
       '-f', 'webm', 'pipe:1',
     ]);
   } else {
+    console.log('[relay-stream] Tipo no soportado para relay:', track.type, track.url?.slice(0,50));
     return;
   }
 
   relayStreamProc = proc;
+  let bytesSent = 0;
   proc.stdout.on('data', (chunk) => {
+    bytesSent += chunk.length;
     if (relaySocket?.connected) relaySocket.emit('broadcast_chunk', chunk);
   });
-  proc.stderr.on('data', (d) => console.error('[relay-stream]', d.toString().trim()));
+  proc.stderr.on('data', (d) => {
+    const line = d.toString().trim();
+    if (line) console.error('[relay-stream stderr]', line);
+  });
   proc.on('error', (err) => console.error('[relay-stream error]', err.message));
-  proc.on('close', () => {
+  proc.on('close', (code) => {
+    console.log(`[relay-stream] Fin (code=${code}, bytes=${bytesSent})`);
     relayStreamProc = null;
     // auto-avanzar playlist cuando termina la pista
     if (radioState.status === 'playing' && radioState.playlist.length > 0) {

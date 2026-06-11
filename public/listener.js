@@ -321,7 +321,15 @@ function flushMSEQueue() {
   try {
     const chunk = mseQueue.shift();
     mseSrcBuf.appendBuffer(chunk instanceof ArrayBuffer ? chunk : chunk.buffer);
-  } catch(e) {}
+  } catch(e) {
+    if (e.name === 'QuotaExceededError' && mseSrcBuf.buffered.length > 0) {
+      try {
+        const start = mseSrcBuf.buffered.start(0);
+        const end = mseSrcBuf.buffered.end(mseSrcBuf.buffered.length - 1);
+        if (end - start > 10) mseSrcBuf.remove(start, end - 5);
+      } catch(_) {}
+    }
+  }
 }
 
 socket.on('live_audio_chunk', (chunk) => {
