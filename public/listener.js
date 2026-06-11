@@ -296,9 +296,11 @@ function setupMSE(autoplay = false) {
   inactiveEl.pause(); inactiveEl.src = '';
 
   mse = new MediaSource();
+  const thisMse = mse;
   audioA.src = URL.createObjectURL(mse);
   const mime = 'audio/webm;codecs=opus';
   mse.addEventListener('sourceopen', () => {
+    if (mse !== thisMse || thisMse.readyState !== 'open') return;
     if (!MediaSource.isTypeSupported(mime)) return;
     mseSrcBuf = mse.addSourceBuffer(mime);
     mseSrcBuf.mode = 'sequence';
