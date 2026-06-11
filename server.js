@@ -155,28 +155,38 @@ app.post('/api/live', (req, res) => {
   res.json({ ok: true });
 });
 
-// Stream de audio de YouTube proxeado por el servidor (usa yt-dlp)
+// Stream de audio de YouTube proxeado por el servidor (yt-dlp → ffmpeg → mp3)
 app.get('/api/yt-stream', (req, res) => {
   const url = req.query.url;
   if (!url || !isYouTubeUrl(url)) return res.status(400).send('URL de YouTube inválida');
 
-  res.setHeader('Content-Type', 'audio/webm;codecs=opus');
+  res.setHeader('Content-Type', 'audio/mpeg');
   res.setHeader('Transfer-Encoding', 'chunked');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-cache');
 
-  const proc = spawn(YT_DLP, [
-    '--no-playlist',
-    '-f', 'bestaudio[ext=webm]/bestaudio[acodec=opus]/bestaudio',
+  const ytProc = spawn(YT_DLP, [
+    '--no-playlist', '-f', 'bestaudio',
     '--no-part', '-o', '-',
     '--socket-timeout', '15',
     url,
   ]);
 
-  proc.stdout.pipe(res);
-  req.on('close', () => proc.kill());
-  proc.stderr.on('data', d => console.error('[yt-dlp]', d.toString().trim()));
-  proc.on('error', err => { if (!res.headersSent) res.status(500).send(err.message); });
+  const ffProc = spawn(FFMPEG, [
+    '-i', 'pipe:0',
+    '-vn', '-acodec', 'libmp3lame', '-ab', '128k',
+    '-f', 'mp3', 'pipe:1',
+  ]);
+
+  ytProc.stdout.pipe(ffProc.stdin);
+  ffProc.stdout.pipe(res);
+
+  const cleanup = () => { ytProc.kill(); ffProc.kill(); };
+  req.on('close', cleanup);
+  ytProc.on('error', err => { console.error('[yt-dlp]', err.message); cleanup(); if (!res.headersSent) res.status(500).end(); });
+  ffProc.on('error', err => { console.error('[ffmpeg]', err.message); cleanup(); if (!res.headersSent) res.status(500).end(); });
+  ytProc.stderr.on('data', d => console.error('[yt-dlp]', d.toString().trim()));
+  ffProc.stderr.on('data', d => {}); // ffmpeg stderr es verboso, suprimir
 });
 
 // Info de un video de YouTube (título, duración) via yt-dlp
