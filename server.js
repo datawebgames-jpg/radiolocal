@@ -493,6 +493,14 @@ io.on('connection', socket => {
     socket.broadcast.emit('remote_mic_chunk', chunk);
   });
 
+  socket.on('remote_video_chunk', (chunk) => {
+    socket.broadcast.emit('video_chunk', chunk);
+  });
+
+  socket.on('remote_video_stop', () => {
+    socket.broadcast.emit('screen_share_stop');
+  });
+
   socket.on('remote_mic_identify', () => {
     socket.isRemoteMic = true;
     io.emit('remote_mic_status', true);

@@ -13,7 +13,7 @@
   }
   .card {
     background: #18181c; border: 1px solid #2a2a32; border-radius: 16px;
-    padding: 32px; width: 340px; text-align: center;
+    padding: 32px; width: 360px; text-align: center;
   }
   .icon { font-size: 3rem; margin-bottom: 12px; }
   h1 { font-size: 1.3rem; margin-bottom: 6px; }
@@ -23,10 +23,12 @@
     width: 100%; padding: 14px; border-radius: 10px; border: none;
     font-size: 1rem; font-weight: 600; cursor: pointer; margin-bottom: 10px;
   }
-  .btn-start { background: #e63946; color: #fff; }
-  .btn-stop  { background: #333; color: #f0f0f0; }
+  .btn-start  { background: #e63946; color: #fff; }
+  .btn-stop   { background: #333; color: #f0f0f0; }
+  .btn-cam    { background: #1d4ed8; color: #fff; }
+  .btn-cam-on { background: #7c3aed; color: #fff; }
   .meter-wrap {
-    margin-top: 16px; background: #222228; border-radius: 6px;
+    margin-top: 8px; background: #222228; border-radius: 6px;
     height: 10px; overflow: hidden;
   }
   .meter-bar {
@@ -39,24 +41,45 @@
     border: 1px solid #2a2a32; border-radius: 8px; margin-bottom: 12px;
     font-size: .9rem;
   }
+  #camPreview {
+    width: 100%; border-radius: 10px; margin-bottom: 10px;
+    display: none; background: #000;
+  }
+  .divider {
+    border: none; border-top: 1px solid #2a2a32;
+    margin: 16px 0;
+  }
+  .section-label {
+    font-size: .75rem; color: #666; text-transform: uppercase;
+    letter-spacing: .08em; margin-bottom: 10px;
+  }
 </style>
 </head>
 <body>
 <div class="card">
-  <div class="icon">🎙️</div>
+  <div class="icon" id="icon">🎙️</div>
   <h1>Micrófono Remoto</h1>
   <div class="status" id="status">Desconectado del aire</div>
 
+  <!-- AUDIO -->
+  <div class="section-label">🎙️ Micrófono</div>
   <select id="audioSource"></select>
-
   <button class="btn-start" id="btnStart" onclick="startMic()">🎙️ Activar Micrófono</button>
-  <button class="btn-stop"  id="btnStop"  onclick="stopMic()" style="display:none">⏹ Detener</button>
-
+  <button class="btn-stop"  id="btnStop"  onclick="stopMic()" style="display:none">⏹ Detener Micrófono</button>
   <div class="meter-wrap"><div class="meter-bar" id="meterBar"></div></div>
+
+  <hr class="divider">
+
+  <!-- CÁMARA -->
+  <div class="section-label">📷 Cámara (opcional)</div>
+  <select id="videoSource"></select>
+  <video id="camPreview" autoplay muted playsinline></video>
+  <button class="btn-cam" id="btnCamStart" onclick="startCamera()">📷 Activar Cámara</button>
+  <button class="btn-cam-on" id="btnCamStop" onclick="stopCamera()" style="display:none">📷 Detener Cámara</button>
 
   <p class="hint">
     Abrí esta página en cualquier PC de tu red.<br>
-    El audio llega directo a la Mesa DJ del admin.
+    El audio va a la Mesa DJ. La cámara va a los oyentes.
   </p>
 </div>
 
@@ -65,66 +88,135 @@
 const socket = io();
 socket.emit('remote_mic_identify');
 
-let mediaRecorder = null, stream = null;
+let micRecorder = null, micStream = null;
+let camRecorder = null, camStream = null;
 let meterAnalyser = null, meterAnim = null;
 const audioCtx = new AudioContext();
 
-// Listar micrófonos disponibles
+// Listar dispositivos de audio y video
 (async function loadDevices() {
   try {
-    await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop()));
+    await navigator.mediaDevices.getUserMedia({ audio: true, video: true })
+      .then(s => s.getTracks().forEach(t => t.stop()))
+      .catch(() => navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop())));
     const devices = await navigator.mediaDevices.enumerateDevices();
-    const sel = document.getElementById('audioSource');
-    sel.innerHTML = '';
-    devices.filter(d => d.kind === 'audioinput').forEach(d => {
+    const audioSel = document.getElementById('audioSource');
+    const videoSel = document.getElementById('videoSource');
+    audioSel.innerHTML = '';
+    videoSel.innerHTML = '<option value="">— Sin cámara —</option>';
+    devices.forEach(d => {
       const o = document.createElement('option');
       o.value = d.deviceId;
-      o.textContent = d.label || `Micrófono ${sel.options.length + 1}`;
-      sel.appendChild(o);
+      if (d.kind === 'audioinput') {
+        o.textContent = d.label || `Micrófono ${audioSel.options.length + 1}`;
+        audioSel.appendChild(o);
+      } else if (d.kind === 'videoinput') {
+        o.textContent = d.label || `Cámara ${videoSel.options.length}`;
+        videoSel.appendChild(o);
+      }
     });
   } catch(e) {}
 })();
+
+// ── Micrófono ──────────────────────────────────────────────
 
 async function startMic() {
   try {
     if (audioCtx.state === 'suspended') await audioCtx.resume();
     const deviceId = document.getElementById('audioSource').value;
-    stream = await navigator.mediaDevices.getUserMedia({
+    micStream = await navigator.mediaDevices.getUserMedia({
       audio: deviceId ? { deviceId: { exact: deviceId }, echoCancellation: true, noiseSuppression: true } : true
     });
 
     meterAnalyser = audioCtx.createAnalyser();
     meterAnalyser.fftSize = 256;
-    audioCtx.createMediaStreamSource(stream).connect(meterAnalyser);
+    audioCtx.createMediaStreamSource(micStream).connect(meterAnalyser);
     drawMeter();
 
     const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
-    mediaRecorder = new MediaRecorder(stream, { mimeType: mime, audioBitsPerSecond: 128000 });
-    mediaRecorder.ondataavailable = async e => {
+    micRecorder = new MediaRecorder(micStream, { mimeType: mime, audioBitsPerSecond: 128000 });
+    micRecorder.ondataavailable = async e => {
       if (e.data.size > 0) socket.emit('remote_mic_chunk', await e.data.arrayBuffer());
     };
-    mediaRecorder.start(250);
+    micRecorder.start(250);
 
-    document.getElementById('status').textContent = '🔴 En el aire';
-    document.getElementById('status').className = 'status live';
+    setStatus('🔴 Micrófono en el aire', true);
     document.getElementById('btnStart').style.display = 'none';
     document.getElementById('btnStop').style.display = '';
-    document.querySelector('.icon').textContent = '🔴';
+    document.getElementById('icon').textContent = '🔴';
   } catch(e) {
-    document.getElementById('status').textContent = 'Error: ' + e.message;
+    setStatus('Error mic: ' + e.message, false);
   }
 }
 
 function stopMic() {
-  if (mediaRecorder) { mediaRecorder.stop(); mediaRecorder = null; }
-  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (micRecorder) { micRecorder.stop(); micRecorder = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
   if (meterAnim) { cancelAnimationFrame(meterAnim); meterAnim = null; }
   document.getElementById('meterBar').style.width = '0%';
-  document.getElementById('status').textContent = 'Desconectado del aire';
-  document.getElementById('status').className = 'status';
   document.getElementById('btnStart').style.display = '';
   document.getElementById('btnStop').style.display = 'none';
-  document.querySelector('.icon').textContent = '🎙️';
+  if (!camStream) {
+    document.getElementById('icon').textContent = '🎙️';
+    setStatus('Desconectado del aire', false);
+  } else {
+    setStatus('🔴 Cámara en el aire', true);
+  }
+}
+
+// ── Cámara ──────────────────────────────────────────────────
+
+async function startCamera() {
+  try {
+    const deviceId = document.getElementById('videoSource').value;
+    const constraints = {
+      video: deviceId ? { deviceId: { exact: deviceId }, width: 1280, height: 720 } : { width: 1280, height: 720 },
+      audio: false,
+    };
+    camStream = await navigator.mediaDevices.getUserMedia(constraints);
+
+    const preview = document.getElementById('camPreview');
+    preview.srcObject = camStream;
+    preview.style.display = 'block';
+
+    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
+    camRecorder = new MediaRecorder(camStream, { mimeType: mime, videoBitsPerSecond: 1_000_000 });
+    camRecorder.ondataavailable = async e => {
+      if (e.data.size > 0) socket.emit('remote_video_chunk', await e.data.arrayBuffer());
+    };
+    camRecorder.start(500);
+
+    document.getElementById('btnCamStart').style.display = 'none';
+    document.getElementById('btnCamStop').style.display = '';
+    if (!micStream) setStatus('🔴 Cámara en el aire', true);
+
+    camStream.getVideoTracks()[0].addEventListener('ended', stopCamera);
+  } catch(e) {
+    setStatus('Error cámara: ' + e.message, false);
+  }
+}
+
+function stopCamera() {
+  if (camRecorder) { camRecorder.stop(); camRecorder = null; }
+  if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+  socket.emit('remote_video_stop');
+  const preview = document.getElementById('camPreview');
+  preview.srcObject = null;
+  preview.style.display = 'none';
+  document.getElementById('btnCamStart').style.display = '';
+  document.getElementById('btnCamStop').style.display = 'none';
+  if (!micStream) {
+    document.getElementById('icon').textContent = '🎙️';
+    setStatus('Desconectado del aire', false);
+  }
+}
+
+// ── Utils ──────────────────────────────────────────────────
+
+function setStatus(msg, live) {
+  const el = document.getElementById('status');
+  el.textContent = msg;
+  el.className = 'status' + (live ? ' live' : '');
 }
 
 function drawMeter() {
