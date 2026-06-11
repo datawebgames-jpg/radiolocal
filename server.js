@@ -160,14 +160,17 @@ app.get('/api/yt-stream', (req, res) => {
   const url = req.query.url;
   if (!url || !isYouTubeUrl(url)) return res.status(400).send('URL de YouTube inválida');
 
-  res.setHeader('Content-Type', 'audio/webm');
+  res.setHeader('Content-Type', 'audio/webm;codecs=opus');
   res.setHeader('Transfer-Encoding', 'chunked');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-cache');
 
   const proc = spawn(YT_DLP, [
-    '--no-playlist', '-f', 'bestaudio',
-    '--no-part', '-o', '-', url,
+    '--no-playlist',
+    '-f', 'bestaudio[ext=webm]/bestaudio[acodec=opus]/bestaudio',
+    '--no-part', '-o', '-',
+    '--socket-timeout', '15',
+    url,
   ]);
 
   proc.stdout.pipe(res);
