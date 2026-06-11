@@ -35,11 +35,14 @@
 
   <!-- PLAYER CONTROLS (oyente solo tiene volumen) -->
   <div class="player-controls">
-    <button class="btn-play-main" id="btnPlay" onclick="togglePlay()">▶ Escuchar</button>
+    <button class="btn-play-main" id="btnPlay" onclick="togglePlay()" disabled>▶ Escuchar</button>
     <div class="volume-wrap">
       <span>🔊</span>
       <input type="range" id="volume" min="0" max="1" step="0.01" value="0.8" oninput="setVolume(this.value)">
     </div>
+  </div>
+  <div id="streamHint" style="display:none;text-align:center;font-size:.8rem;color:#e63946;margin-top:6px;animation:pulse 1.5s infinite">
+    🎵 Hay señal en el aire — presioná ▶ Escuchar
   </div>
 
   <!-- AUDIO ELEMENTS para crossfade (ocultos) -->

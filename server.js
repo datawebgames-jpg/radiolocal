@@ -108,6 +108,7 @@ const storage = multer.diskStorage({
 const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
 
 app.use(express.json());
+app.use((req, res, next) => { res.setHeader('ngrok-skip-browser-warning', '1'); next(); });
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
@@ -583,6 +584,8 @@ function startStreamingToRelay(track) {
 
   proc.stdout.on('data', (chunk) => {
     if (relaySocket?.connected) relaySocket.emit('broadcast_chunk', chunk);
+    // YouTube: también emitir a oyentes locales (usan MSE, no HTTP stream directo)
+    if (ytUrl) io.emit('live_audio_chunk', chunk);
   });
   proc.stderr.on('data', (d) => {
     const s = d.toString();

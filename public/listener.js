@@ -10,6 +10,7 @@ let activeEl = audioA, inactiveEl = audioB;
 let activeGain = null, inactiveGain = null;
 let isPlaying = false;
 let currentTrackUrl = null;
+let liveMode = false;
 const XFADE_SEC = 2.5;
 
 function setupAudioContext() {
@@ -38,7 +39,6 @@ function setVolume(v) {
   if (masterGain) masterGain.gain.value = parseFloat(v);
 }
 
-// Carga el primer tema sin crossfade (al sincronizar estado inicial)
 function loadInitialTrack(url) {
   if (!url) return;
   currentTrackUrl = url;
@@ -46,19 +46,16 @@ function loadInitialTrack(url) {
   activeEl.load();
 }
 
-// Cambia o mezcla al siguiente tema
 function crossfadeTo(url) {
   if (!url) return;
   currentTrackUrl = url;
 
   if (!isPlaying) {
-    // No estaba reproduciendo: solo cargamos en el elemento activo
     activeEl.src = url;
     activeEl.load();
     return;
   }
 
-  // Estaba reproduciendo: crossfade real
   setupAudioContext();
   inactiveEl.src = url;
   inactiveEl.load();
@@ -90,18 +87,22 @@ async function togglePlay() {
     activeEl.pause();
     inactiveEl.pause();
     isPlaying = false;
-    document.getElementById('btnPlay').textContent = '▶ Escuchar';
-    document.getElementById('btnPlay').classList.remove('playing');
-    document.getElementById('coverArt').classList.remove('spinning');
+    setPlayingUI(false);
   } else {
-    // En modo live, asegurarse de que el MSE esté listo
     if (liveMode && !mse) setupMSE(false);
     await activeEl.play().catch(() => {});
     isPlaying = true;
-    document.getElementById('btnPlay').textContent = '⏸ Pausar';
-    document.getElementById('btnPlay').classList.add('playing');
-    document.getElementById('coverArt').classList.add('spinning');
+    setPlayingUI(true);
   }
+}
+
+function setPlayingUI(playing) {
+  const btn = document.getElementById('btnPlay');
+  btn.textContent = playing ? '⏸ Pausar' : '▶ Escuchar';
+  btn.classList.toggle('playing', playing);
+  document.getElementById('coverArt').classList.toggle('spinning', playing);
+  const hint = document.getElementById('streamHint');
+  if (hint) hint.style.display = (!playing && (liveMode || currentTrackUrl)) ? 'block' : 'none';
 }
 
 function onTrackEnded() { socket.emit('next_track'); }
@@ -111,10 +112,9 @@ audioB.addEventListener('ended', onTrackEnded);
 // ── Visualizer ──────────────────────────────────────────────
 const canvas = document.getElementById('visualizer');
 const ctx = canvas.getContext('2d');
-let animFrame;
 
 function drawVisualizer() {
-  animFrame = requestAnimationFrame(drawVisualizer);
+  requestAnimationFrame(drawVisualizer);
   const W = canvas.width, H = canvas.height;
   ctx.clearRect(0, 0, W, H);
 
@@ -152,31 +152,39 @@ socket.on('state_sync', state => {
   updateStatus(state.status);
   if (state.currentTrack) {
     document.getElementById('trackName').textContent = state.currentTrack.name;
-    if (state.currentTrack.url) {
+    if (state.currentTrack.url && !state.currentTrack.url.includes('/api/yt-stream')) {
       loadInitialTrack(state.currentTrack.url);
-    } else if (state.currentTrack.type === 'relay' || state.currentTrack.type === 'browser-live') {
+    } else {
+      // relay o yt-stream: llegan chunks via socket
       liveMode = true;
     }
   }
 });
 
 socket.on('track_change', ({ track }) => {
-  if (track && track.url) {
-    document.getElementById('trackName').textContent = track.name;
-    // Si había live MSE activo, limpiarlo
-    if (mse) { mse = null; mseSrcBuf = null; mseQueue = []; }
-    liveMode = false;
-    crossfadeTo(track.url);
-  } else if (track && (track.type === 'browser-live' || track.type === 'relay')) {
-    document.getElementById('trackName').textContent = track.name;
-    liveMode = true;
-  } else {
+  if (!track) {
     document.getElementById('trackName').textContent = '— Sin señal —';
+    teardownMSE();
+    liveMode = false;
     activeEl.pause(); inactiveEl.pause();
     isPlaying = false;
-    document.getElementById('btnPlay').textContent = '▶ Escuchar';
-    document.getElementById('btnPlay').classList.remove('playing');
-    document.getElementById('coverArt').classList.remove('spinning');
+    setPlayingUI(false);
+    return;
+  }
+
+  document.getElementById('trackName').textContent = track.name;
+
+  const isLiveTrack = !track.url || track.type === 'relay' || track.type === 'browser-live';
+
+  if (isLiveTrack) {
+    // Relay o en vivo: resetear MSE para la nueva pista, chunks llegarán via socket
+    teardownMSE();
+    liveMode = true;
+    // Si estaba escuchando, los chunks nuevos van a reactivar el audio automáticamente
+  } else {
+    teardownMSE();
+    liveMode = false;
+    crossfadeTo(track.url);
   }
 });
 
@@ -206,7 +214,6 @@ socket.on('ad_broadcast', ({ text, banner }) => {
   }
 });
 
-// Ad con archivo de audio/video
 socket.on('ad_play', (ad) => {
   if (ad.type === 'video') {
     const v = document.getElementById('adVideo');
@@ -225,7 +232,127 @@ socket.on('ad_play', (ad) => {
   }
 });
 
-// Pantalla compartida / webcam
+// ── MSE para audio en vivo / relay ──────────────────────────────────────────────
+let mse = null, mseSrcBuf = null, mseQueue = [], mseReady = false;
+
+function setupMSE(autoplay = false) {
+  if (!window.MediaSource || mse) return;
+  liveMode = true;
+  setupAudioContext();
+  audioCtx.resume().catch(() => {});
+  gainA.gain.cancelScheduledValues(audioCtx.currentTime);
+  gainB.gain.cancelScheduledValues(audioCtx.currentTime);
+  gainA.gain.value = 1; gainB.gain.value = 0;
+  activeEl = audioA; inactiveEl = audioB;
+  activeGain = gainA; inactiveGain = gainB;
+  inactiveEl.pause(); inactiveEl.src = '';
+
+  mse = new MediaSource();
+  audioA.src = URL.createObjectURL(mse);
+
+  mse.addEventListener('sourceopen', () => {
+    const mime = 'audio/webm;codecs=opus';
+    if (!MediaSource.isTypeSupported(mime)) return;
+    mseSrcBuf = mse.addSourceBuffer(mime);
+    mseSrcBuf.mode = 'sequence';
+    mseSrcBuf.addEventListener('updateend', () => {
+      flushMSEQueue();
+      // Intentar play después de que haya datos reales en el buffer
+      if (autoplay && audioA.paused && audioA.readyState >= 2) {
+        audioA.play().then(() => {
+          isPlaying = true;
+          setPlayingUI(true);
+        }).catch(() => {});
+      }
+    });
+    mseReady = true;
+    flushMSEQueue();
+  });
+}
+
+function flushMSEQueue() {
+  if (!mseSrcBuf || mseSrcBuf.updating || mseQueue.length === 0) return;
+  try {
+    const chunk = mseQueue.shift();
+    const buf = chunk instanceof ArrayBuffer ? chunk : (ArrayBuffer.isView(chunk) ? chunk.buffer : chunk);
+    mseSrcBuf.appendBuffer(buf);
+  } catch(e) {
+    if (e.name === 'QuotaExceededError' && mseSrcBuf.buffered.length > 0) {
+      try {
+        const end = mseSrcBuf.buffered.end(mseSrcBuf.buffered.length - 1);
+        mseSrcBuf.remove(mseSrcBuf.buffered.start(0), end - 5);
+      } catch(_) {}
+    }
+  }
+}
+
+function teardownMSE() {
+  mse = null; mseSrcBuf = null; mseQueue = []; mseReady = false;
+  audioA.pause();
+  audioA.src = '';
+}
+
+// El browser tiene suficientes datos para reproducir
+audioA.addEventListener('canplay', () => {
+  if (isPlaying && liveMode && audioA.paused) {
+    audioA.play().catch(() => {});
+  }
+});
+
+// Si el audio se tranca esperando datos, reintenta
+audioA.addEventListener('waiting', () => {
+  if (isPlaying && liveMode) {
+    setTimeout(() => { if (audioA.paused && isPlaying) audioA.play().catch(() => {}); }, 500);
+  }
+});
+
+socket.on('live_audio_chunk', (chunk) => {
+  if (!mse) setupMSE(isPlaying);
+  const buf = chunk instanceof ArrayBuffer ? chunk : (ArrayBuffer.isView(chunk) ? chunk.buffer : chunk);
+  mseQueue.push(buf);
+  flushMSEQueue();
+});
+
+socket.on('browser_live_stop', () => {
+  teardownMSE();
+  liveMode = false;
+  isPlaying = false;
+  setPlayingUI(false);
+});
+
+// ── Publicidad audio por chunks (relay) ──────────────────────────────────────────────
+let adMse = null, adMseBuf = null, adMseQueue = [], adEl = null;
+
+socket.on('ad_audio_chunk', (chunk) => {
+  const buf = chunk instanceof ArrayBuffer ? chunk : (ArrayBuffer.isView(chunk) ? chunk.buffer : chunk);
+  if (!adMse) {
+    adMse = new MediaSource();
+    adEl = new Audio();
+    adEl.src = URL.createObjectURL(adMse);
+    adMse.addEventListener('sourceopen', () => {
+      const mime = 'audio/webm;codecs=opus';
+      if (!MediaSource.isTypeSupported(mime)) return;
+      adMseBuf = adMse.addSourceBuffer(mime);
+      adMseBuf.mode = 'sequence';
+      adMseBuf.addEventListener('updateend', () => {
+        if (adEl && adEl.paused) adEl.play().catch(() => {});
+        flushAdMSE();
+      });
+      flushAdMSE();
+    });
+    adEl.addEventListener('canplay', () => { adEl.play().catch(() => {}); });
+    adEl.onended = () => { adMse = null; adMseBuf = null; adMseQueue = []; adEl = null; };
+  }
+  adMseQueue.push(buf);
+  flushAdMSE();
+});
+
+function flushAdMSE() {
+  if (!adMseBuf || adMseBuf.updating || adMseQueue.length === 0) return;
+  try { adMseBuf.appendBuffer(adMseQueue.shift()); } catch(e) {}
+}
+
+// ── Pantalla compartida / webcam ──────────────────────────────────────────────
 let screenMse = null, screenBuf = null, screenQueue = [];
 
 socket.on('video_chunk', (chunk) => {
@@ -264,88 +391,23 @@ socket.on('screen_share_stop', () => {
   screenMse = null; screenBuf = null; screenQueue = [];
 });
 
+// ── UI helpers ──────────────────────────────────────────────
 function updateStatus(status) {
   const badge = document.getElementById('onAirBadge');
   const btn = document.getElementById('btnPlay');
+  const hint = document.getElementById('streamHint');
   if (status === 'off') {
     badge.textContent = '● OFF';
     badge.classList.remove('on');
     btn.disabled = true;
+    if (hint) hint.style.display = 'none';
   } else {
     badge.textContent = status === 'live' ? '● EN VIVO' : '● ON AIR';
     badge.classList.add('on');
     btn.disabled = false;
+    if (hint && !isPlaying) hint.style.display = 'block';
   }
 }
-
-// ── Audio en vivo MSE (WebSocket relay) ──────────────────────────────────────────────
-let mse = null, mseSrcBuf = null, mseQueue = [], mseReady = false;
-
-let liveMode = false;
-
-function setupMSE(autoplay = false) {
-  if (!window.MediaSource || mse) return;
-  liveMode = true;
-  setupAudioContext();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
-  gainA.gain.cancelScheduledValues(audioCtx.currentTime);
-  gainB.gain.cancelScheduledValues(audioCtx.currentTime);
-  gainA.gain.value = 1; gainB.gain.value = 0;
-  activeEl = audioA; inactiveEl = audioB;
-  activeGain = gainA; inactiveGain = gainB;
-  inactiveEl.pause(); inactiveEl.src = '';
-
-  mse = new MediaSource();
-  audioA.src = URL.createObjectURL(mse);
-  const mime = 'audio/webm;codecs=opus';
-  mse.addEventListener('sourceopen', () => {
-    if (!MediaSource.isTypeSupported(mime)) return;
-    mseSrcBuf = mse.addSourceBuffer(mime);
-    mseSrcBuf.mode = 'sequence';
-    mseSrcBuf.addEventListener('updateend', flushMSEQueue);
-    mseReady = true;
-    flushMSEQueue();
-    if (autoplay) {
-      audioA.play().then(() => {
-        isPlaying = true;
-        document.getElementById('btnPlay').textContent = '⏸ Pausar';
-        document.getElementById('btnPlay').classList.add('playing');
-        document.getElementById('coverArt').classList.add('spinning');
-      }).catch(() => {});
-    }
-  });
-}
-
-function flushMSEQueue() {
-  if (!mseSrcBuf || mseSrcBuf.updating || mseQueue.length === 0) return;
-  try {
-    const chunk = mseQueue.shift();
-    mseSrcBuf.appendBuffer(chunk instanceof ArrayBuffer ? chunk : chunk.buffer);
-  } catch(e) {
-    if (e.name === 'QuotaExceededError' && mseSrcBuf.buffered.length > 0) {
-      try {
-        const start = mseSrcBuf.buffered.start(0);
-        const end = mseSrcBuf.buffered.end(mseSrcBuf.buffered.length - 1);
-        if (end - start > 10) mseSrcBuf.remove(start, end - 5);
-      } catch(_) {}
-    }
-  }
-}
-
-socket.on('live_audio_chunk', (chunk) => {
-  if (!mse) setupMSE(isPlaying); // autoplay solo si el oyente ya estaba escuchando
-  mseQueue.push(chunk);
-  flushMSEQueue();
-});
-
-socket.on('browser_live_stop', () => {
-  mse = null; mseSrcBuf = null; mseQueue = []; mseReady = false; liveMode = false;
-  audioA.pause(); audioA.src = '';
-  isPlaying = false;
-  document.getElementById('btnPlay').textContent = '▶ Escuchar';
-  document.getElementById('btnPlay').classList.remove('playing');
-  document.getElementById('coverArt').classList.remove('spinning');
-});
 
 // ── Chat ──────────────────────────────────────────────
 socket.on('chat_history', msgs => {
@@ -380,51 +442,6 @@ function escHtml(s) {
   return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Publicidad en audio vía relay ──────────────────────────────────────────────
-let adMse = null, adMseBuf = null, adMseQueue = [];
-
-socket.on('ad_audio_chunk', (chunk) => {
-  if (!adMse) {
-    adMse = new MediaSource();
-    const adEl = new Audio();
-    adEl.src = URL.createObjectURL(adMse);
-    adMse.addEventListener('sourceopen', () => {
-      const mime = 'audio/webm;codecs=opus';
-      if (!MediaSource.isTypeSupported(mime)) return;
-      adMseBuf = adMse.addSourceBuffer(mime);
-      adMseBuf.mode = 'sequence';
-      adMseBuf.addEventListener('updateend', flushAdMSE);
-      flushAdMSE();
-    });
-    adEl.play().catch(() => {});
-    adEl.onended = () => { adMse = null; adMseBuf = null; adMseQueue = []; };
-  }
-  adMseQueue.push(chunk instanceof ArrayBuffer ? chunk : chunk.buffer);
-  flushAdMSE();
-});
-
-function flushAdMSE() {
-  if (!adMseBuf || adMseBuf.updating || adMseQueue.length === 0) return;
-  try { adMseBuf.appendBuffer(adMseQueue.shift()); } catch(e) {}
-}
-
-// ── Notificación de donación recibida ──────────────────────────────────────────────
-socket.on('donation_received', ({ donorName, amount, currency }) => {
-  const el  = document.getElementById('donationAlert');
-  const msg = document.getElementById('donationAlertMsg');
-  if (!el) return;
-  let text = '¡Gracias por ayudar a mantener la radio on!';
-  if (donorName && amount) text = `¡${donorName} donó $${amount} ${currency}! ${text}`;
-  else if (donorName)      text = `¡${donorName} hizo una donación! ${text}`;
-  msg.textContent = text;
-  el.style.display = 'flex';
-  el.classList.add('show');
-  setTimeout(() => {
-    el.classList.remove('show');
-    setTimeout(() => { el.style.display = 'none'; }, 600);
-  }, 7000);
-});
-
 // ── Donaciones ──────────────────────────────────────────────
 let qrGenerated = false;
 function openDonate() {
@@ -444,3 +461,19 @@ function copyAlias() {
     setTimeout(() => { document.getElementById('copyHint').textContent = '📋'; }, 2000);
   });
 }
+
+socket.on('donation_received', ({ donorName, amount, currency }) => {
+  const el  = document.getElementById('donationAlert');
+  const msg = document.getElementById('donationAlertMsg');
+  if (!el) return;
+  let text = '¡Gracias por ayudar a mantener la radio on!';
+  if (donorName && amount) text = `¡${donorName} donó $${amount} ${currency}! ${text}`;
+  else if (donorName)      text = `¡${donorName} hizo una donación! ${text}`;
+  msg.textContent = text;
+  el.style.display = 'flex';
+  el.classList.add('show');
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => { el.style.display = 'none'; }, 600);
+  }, 7000);
+});
