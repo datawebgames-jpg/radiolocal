@@ -43,7 +43,7 @@ const radioState = {
   playlist: [],
   currentIndex: -1,
   listeners: 0,
-  stationName: 'Mi Radio Local',
+  stationName: 'Radio Pampa AR',
   streamUrl: '',
   mpAccessToken: '',
 };
