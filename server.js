@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const { io: ioc } = require('socket.io-client');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -120,6 +121,10 @@ app.post('/api/play', (req, res) => {
     radioState.status = 'playing';
     io.emit('track_change', { track: radioState.currentTrack, index });
     io.emit('status_change', radioState.status);
+    // Relay
+    relaySocket?.emit('relay_event', { event: 'status_change', data: 'playing' });
+    emitRelayTrackChange(radioState.currentTrack, index);
+    startStreamingToRelay(radioState.currentTrack);
   }
   res.json({ ok: true });
 });
@@ -127,9 +132,13 @@ app.post('/api/play', (req, res) => {
 app.post('/api/stop', (req, res) => {
   radioState.status = 'off';
   radioState.currentTrack = null;
+  stopRelayStream();
   io.emit('status_change', radioState.status);
   io.emit('track_change', { track: null, index: -1 });
   io.emit('browser_live_stop');
+  relaySocket?.emit('relay_event', { event: 'status_change', data: 'off' });
+  relaySocket?.emit('relay_event', { event: 'track_change', data: { track: null, index: -1 } });
+  relaySocket?.emit('relay_event', { event: 'browser_live_stop', data: null });
   res.json({ ok: true });
 });
 
@@ -138,8 +147,11 @@ app.post('/api/live-browser', (req, res) => {
   radioState.status = 'live';
   radioState.streamUrl = 'browser';
   radioState.currentTrack = { name: '🎙️ En Vivo — Directo', url: null, type: 'browser-live' };
+  stopRelayStream();
   io.emit('status_change', radioState.status);
   io.emit('track_change', { track: radioState.currentTrack, index: -1 });
+  relaySocket?.emit('relay_event', { event: 'status_change', data: 'live' });
+  relaySocket?.emit('relay_event', { event: 'track_change', data: { track: radioState.currentTrack, index: -1 } });
   res.json({ ok: true });
 });
 
@@ -293,6 +305,7 @@ app.post('/api/ads/play/:id', (req, res) => {
   const ad = adsList.find(a => a.id === req.params.id);
   if (!ad) return res.status(404).json({ error: 'Ad not found' });
   io.emit('ad_play', ad);
+  relaySocket?.emit('relay_broadcast', { event: 'ad_play', data: ad });
   res.json({ ok: true });
 });
 
@@ -361,7 +374,11 @@ app.post('/api/rtmp/stop', (req, res) => {
 
 app.post('/api/station-name', (req, res) => {
   const { name } = req.body;
-  if (name) { radioState.stationName = name; io.emit('station_name', name); }
+  if (name) {
+    radioState.stationName = name;
+    io.emit('station_name', name);
+    relaySocket?.emit('relay_event', { event: 'station_name', data: name });
+  }
   res.json({ ok: true });
 });
 
@@ -397,12 +414,15 @@ io.on('connection', socket => {
 
   // Admin emite publicidad → retransmitir a todos los oyentes
   socket.on('ad_broadcast_admin', data => {
-    io.emit('ad_broadcast', { text: data.text || '', banner: data.banner || '' });
+    const payload = { text: data.text || '', banner: data.banner || '' };
+    io.emit('ad_broadcast', payload);
+    relaySocket?.emit('relay_broadcast', { event: 'ad_broadcast', data: payload });
   });
 
-  // Relay de audio en vivo desde el browser del admin → todos los oyentes
+  // Relay de audio en vivo desde el browser del admin → todos los oyentes + relay
   socket.on('live_audio_chunk', (chunk) => {
     socket.broadcast.emit('live_audio_chunk', chunk);
+    relaySocket?.emit('broadcast_chunk', chunk);
   });
 
   // Relay de video (pantalla / webcam) → oyentes
@@ -450,3 +470,127 @@ server.listen(PORT, () => {
   console.log(`🎙️  Radio Local corriendo en http://localhost:${PORT}`);
   console.log(`📻  Admin en http://localhost:${PORT}/admin.html`);
 });
+
+// ── Relay Railway ──────────────────────────────────────────────
+const RELAY_URL    = process.env.RELAY_URL    || 'https://radio-pampa-ar-production.up.railway.app';
+const RELAY_SECRET = process.env.RELAY_SECRET || 'pampa-secret-2025';
+
+let relaySocket = null;
+let relayStreamProc = null;
+
+function stopRelayStream() {
+  if (relayStreamProc) {
+    try { relayStreamProc.kill('SIGKILL'); } catch(e) {}
+    relayStreamProc = null;
+  }
+}
+
+function startStreamingToRelay(track) {
+  stopRelayStream();
+  if (!relaySocket?.connected || !track) return;
+
+  let proc;
+  if (track.type === 'url' && isYouTubeUrl(track.url)) {
+    proc = spawn(YT_DLP, [
+      '--no-playlist', '-f', '251/bestaudio[ext=webm]/bestaudio[acodec=opus]/bestaudio',
+      '--no-part', '--no-warnings', '-o', '-', track.url,
+    ]);
+  } else if (track.type === 'upload' && track.file) {
+    const fp = path.join(UPLOADS_DIR, track.file);
+    proc = spawn(FFMPEG, [
+      '-i', fp, '-vn', '-c:a', 'libopus', '-b:a', '128k',
+      '-cluster_size_limit', '2M', '-cluster_time_limit', '5100',
+      '-f', 'webm', 'pipe:1',
+    ]);
+  } else {
+    return;
+  }
+
+  relayStreamProc = proc;
+  proc.stdout.on('data', (chunk) => {
+    if (relaySocket?.connected) relaySocket.emit('broadcast_chunk', chunk);
+  });
+  proc.stderr.on('data', (d) => console.error('[relay-stream]', d.toString().trim()));
+  proc.on('error', (err) => console.error('[relay-stream error]', err.message));
+  proc.on('close', () => {
+    relayStreamProc = null;
+    // auto-avanzar playlist cuando termina la pista
+    if (radioState.status === 'playing' && radioState.playlist.length > 0) {
+      setTimeout(() => {
+        radioState.currentIndex = (radioState.currentIndex + 1) % radioState.playlist.length;
+        const next = radioState.playlist[radioState.currentIndex];
+        radioState.currentTrack = next;
+        io.emit('track_change', { track: next, index: radioState.currentIndex });
+        io.emit('status_change', 'playing');
+        emitRelayTrackChange(next, radioState.currentIndex);
+        startStreamingToRelay(next);
+      }, 500);
+    }
+  });
+}
+
+function emitRelayTrackChange(track, index) {
+  if (!relaySocket?.connected) return;
+  relaySocket.emit('relay_event', {
+    event: 'track_change',
+    data: { track: track ? { name: track.name, url: null, type: 'relay' } : null, index },
+  });
+}
+
+function connectToRelay() {
+  console.log(`📡 Conectando al relay ${RELAY_URL}...`);
+  relaySocket = ioc(RELAY_URL, {
+    auth: { secret: RELAY_SECRET },
+    reconnection: true,
+    reconnectionDelay: 5000,
+  });
+
+  relaySocket.on('connect', () => {
+    console.log('📡 Relay conectado');
+    // Sincronizar estado actual
+    relaySocket.emit('relay_event', { event: 'status_change', data: radioState.status });
+    relaySocket.emit('relay_event', { event: 'station_name', data: radioState.stationName });
+    if (radioState.currentTrack) {
+      emitRelayTrackChange(radioState.currentTrack, radioState.currentIndex);
+      // Reanudar streaming si estaba reproduciendo
+      if (radioState.status === 'playing') startStreamingToRelay(radioState.currentTrack);
+    }
+  });
+
+  relaySocket.on('listeners_count', (n) => {
+    // Oyentes de internet (no contar doble con los locales)
+    // Solo loguear, el conteo local es independiente
+    console.log(`📡 Oyentes internet: ${n}`);
+  });
+
+  relaySocket.on('chat_message', (msg) => {
+    // Mensaje de oyente internet → retransmitir localmente
+    io.emit('chat_message', msg);
+    chatHistory.push(msg);
+    if (chatHistory.length > 200) chatHistory.shift();
+  });
+
+  relaySocket.on('listener_next_track', () => {
+    // Un oyente de internet pidió siguiente pista
+    if (radioState.playlist.length === 0) return;
+    radioState.currentIndex = (radioState.currentIndex + 1) % radioState.playlist.length;
+    const next = radioState.playlist[radioState.currentIndex];
+    radioState.currentTrack = next;
+    radioState.status = 'playing';
+    io.emit('track_change', { track: next, index: radioState.currentIndex });
+    io.emit('status_change', 'playing');
+    emitRelayTrackChange(next, radioState.currentIndex);
+    startStreamingToRelay(next);
+  });
+
+  relaySocket.on('disconnect', () => {
+    console.log('📡 Relay desconectado, reconectando...');
+    stopRelayStream();
+  });
+
+  relaySocket.on('connect_error', (err) => {
+    console.error('📡 Error relay:', err.message);
+  });
+}
+
+connectToRelay();

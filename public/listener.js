@@ -150,9 +150,13 @@ socket.on('state_sync', state => {
   document.title = state.stationName;
   document.getElementById('listenersCount').textContent = state.listeners;
   updateStatus(state.status);
-  if (state.currentTrack && state.currentTrack.url) {
+  if (state.currentTrack) {
     document.getElementById('trackName').textContent = state.currentTrack.name;
-    loadInitialTrack(state.currentTrack.url);
+    if (state.currentTrack.url) {
+      loadInitialTrack(state.currentTrack.url);
+    } else if (state.currentTrack.type === 'relay' || state.currentTrack.type === 'browser-live') {
+      liveMode = true;
+    }
   }
 });
 
@@ -161,8 +165,9 @@ socket.on('track_change', ({ track }) => {
     document.getElementById('trackName').textContent = track.name;
     // Si había live MSE activo, limpiarlo
     if (mse) { mse = null; mseSrcBuf = null; mseQueue = []; }
+    liveMode = false;
     crossfadeTo(track.url);
-  } else if (track && track.type === 'browser-live') {
+  } else if (track && (track.type === 'browser-live' || track.type === 'relay')) {
     document.getElementById('trackName').textContent = track.name;
     liveMode = true;
   } else {
