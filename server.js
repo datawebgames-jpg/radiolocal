@@ -677,3 +677,54 @@ function connectToRelay() {
 }
 
 connectToRelay();
+
+// ── OBS / RTMP ──────────────────────────────────────────────
+// OBS apunta a: rtmp://localhost:1935/live  clave: stream
+const NodeMediaServer = require('node-media-server');
+let obsStreamProc = null;
+
+const nms = new NodeMediaServer({
+  rtmp: { port: 1935, chunk_size: 60000, gop_cache: false, ping: 30, ping_timeout: 60 },
+  logType: 0,
+});
+
+nms.on('postPublish', (id, streamPath) => {
+  console.log('🎙️ OBS conectado, stream:', streamPath);
+  radioState.status = 'live';
+  radioState.currentTrack = { name: '🎙️ En Vivo — OBS', url: null, type: 'obs' };
+  io.emit('status_change', 'live');
+  io.emit('track_change', { track: radioState.currentTrack, index: -1 });
+  io.emit('obs_status', true);
+  relaySocket?.emit('relay_event', { event: 'status_change', data: 'live' });
+  relaySocket?.emit('relay_event', { event: 'track_change', data: { track: { name: '🎙️ En Vivo — OBS', url: null, type: 'relay' }, index: -1 } });
+
+  // ffmpeg lee el RTMP de OBS y convierte a webm/opus para el relay
+  if (obsStreamProc) { try { obsStreamProc.kill('SIGKILL'); } catch(e) {} }
+  obsStreamProc = spawn(FFMPEG, [
+    '-i', `rtmp://localhost:1935${streamPath}`,
+    '-vn', '-c:a', 'libopus', '-b:a', '128k',
+    '-cluster_size_limit', '2M', '-cluster_time_limit', '5100',
+    '-f', 'webm', 'pipe:1',
+  ]);
+  obsStreamProc.stdout.on('data', chunk => {
+    if (relaySocket?.connected) relaySocket.emit('broadcast_chunk', chunk);
+    io.emit('live_audio_chunk', chunk);
+  });
+  obsStreamProc.stderr.on('data', () => {});
+  obsStreamProc.on('error', err => console.error('[obs-ffmpeg error]', err.message));
+});
+
+nms.on('donePublish', (id, streamPath) => {
+  console.log('🎙️ OBS desconectado');
+  if (obsStreamProc) { try { obsStreamProc.kill('SIGKILL'); } catch(e) {} obsStreamProc = null; }
+  radioState.status = 'off';
+  radioState.currentTrack = null;
+  io.emit('status_change', 'off');
+  io.emit('track_change', { track: null, index: -1 });
+  io.emit('obs_status', false);
+  relaySocket?.emit('relay_event', { event: 'status_change', data: 'off' });
+  relaySocket?.emit('relay_event', { event: 'track_change', data: { track: null, index: -1 } });
+});
+
+nms.run();
+console.log('📺 Servidor RTMP corriendo en rtmp://localhost:1935/live  clave: stream');

@@ -166,7 +166,7 @@ socket.on('track_change', ({ track }) => {
     // Si había live MSE activo, limpiarlo
     if (mse) { mse = null; mseSrcBuf = null; mseQueue = []; }
     crossfadeTo(track.url);
-  } else if (track && (track.type === 'browser-live' || track.type === 'relay')) {
+  } else if (track && (track.type === 'browser-live' || track.type === 'relay' || track.type === 'obs')) {
     document.getElementById('trackName').textContent = track.name;
     liveMode = true;
     if (mse) { mse = null; mseSrcBuf = null; mseQueue = []; mseReady = false; audioA.pause(); audioA.src = ''; }
