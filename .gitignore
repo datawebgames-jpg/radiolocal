@@ -5,3 +5,6 @@ server.log
 server.err
 *.log
 .env
+yt-dlp.exe
+*.exe
+presentacion-ventas-localweb.pptx
