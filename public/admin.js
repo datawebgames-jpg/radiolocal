@@ -161,10 +161,15 @@ async function onUrlInput(val) {
   clearTimeout(ytInfoTimer);
   const preview = document.getElementById('ytPreview');
   if (!isYouTubeUrl(val)) { preview.style.display = 'none'; return; }
+  // Mostrar spinner mientras carga
+  document.getElementById('ytTitle').textContent = '⏳ Cargando...';
+  document.getElementById('ytDur').textContent = '';
+  document.getElementById('ytThumb').src = '';
+  preview.style.display = 'flex';
   ytInfoTimer = setTimeout(async () => {
     try {
       const res = await fetch('/api/yt-info?url=' + encodeURIComponent(val));
-      if (!res.ok) return;
+      if (!res.ok) { preview.style.display = 'none'; return; }
       const data = await res.json();
       document.getElementById('ytTitle').textContent = data.title;
       document.getElementById('ytDur').textContent = data.duration
@@ -172,9 +177,8 @@ async function onUrlInput(val) {
         : '';
       document.getElementById('ytThumb').src = data.thumbnail || '';
       document.getElementById('urlName').value = data.title;
-      preview.style.display = 'flex';
-    } catch(e) {}
-  }, 600);
+    } catch(e) { preview.style.display = 'none'; }
+  }, 300);
 }
 
 async function addUrl() {
