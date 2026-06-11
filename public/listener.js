@@ -82,7 +82,7 @@ function crossfadeTo(url) {
 }
 
 async function togglePlay() {
-  if (!currentTrackUrl) return;
+  if (!currentTrackUrl && !liveMode) return;
   setupAudioContext();
   if (audioCtx.state === 'suspended') await audioCtx.resume();
 
@@ -94,6 +94,8 @@ async function togglePlay() {
     document.getElementById('btnPlay').classList.remove('playing');
     document.getElementById('coverArt').classList.remove('spinning');
   } else {
+    // En modo live, asegurarse de que el MSE esté listo
+    if (liveMode && !mse) setupMSE(false);
     await activeEl.play().catch(() => {});
     isPlaying = true;
     document.getElementById('btnPlay').textContent = '⏸ Pausar';
@@ -162,6 +164,7 @@ socket.on('track_change', ({ track }) => {
     crossfadeTo(track.url);
   } else if (track && track.type === 'browser-live') {
     document.getElementById('trackName').textContent = track.name;
+    liveMode = true;
   } else {
     document.getElementById('trackName').textContent = '— Sin señal —';
     activeEl.pause(); inactiveEl.pause();
@@ -273,9 +276,11 @@ function updateStatus(status) {
 // ── Audio en vivo MSE (WebSocket relay) ──────────────────────────────────────────────
 let mse = null, mseSrcBuf = null, mseQueue = [], mseReady = false;
 
-function setupMSE() {
-  if (!window.MediaSource) return;
-  // Siempre usar audioA para live; resetear crossfade
+let liveMode = false;
+
+function setupMSE(autoplay = false) {
+  if (!window.MediaSource || mse) return;
+  liveMode = true;
   setupAudioContext();
   if (audioCtx.state === 'suspended') audioCtx.resume();
   gainA.gain.cancelScheduledValues(audioCtx.currentTime);
@@ -295,12 +300,15 @@ function setupMSE() {
     mseSrcBuf.addEventListener('updateend', flushMSEQueue);
     mseReady = true;
     flushMSEQueue();
+    if (autoplay) {
+      audioA.play().then(() => {
+        isPlaying = true;
+        document.getElementById('btnPlay').textContent = '⏸ Pausar';
+        document.getElementById('btnPlay').classList.add('playing');
+        document.getElementById('coverArt').classList.add('spinning');
+      }).catch(() => {});
+    }
   });
-  audioA.play().catch(() => {});
-  isPlaying = true;
-  document.getElementById('btnPlay').textContent = '⏸ Pausar';
-  document.getElementById('btnPlay').classList.add('playing');
-  document.getElementById('coverArt').classList.add('spinning');
 }
 
 function flushMSEQueue() {
@@ -312,13 +320,13 @@ function flushMSEQueue() {
 }
 
 socket.on('live_audio_chunk', (chunk) => {
-  if (!mse) setupMSE();
+  if (!mse) setupMSE(isPlaying); // autoplay solo si el oyente ya estaba escuchando
   mseQueue.push(chunk);
   flushMSEQueue();
 });
 
 socket.on('browser_live_stop', () => {
-  mse = null; mseSrcBuf = null; mseQueue = []; mseReady = false;
+  mse = null; mseSrcBuf = null; mseQueue = []; mseReady = false; liveMode = false;
   audioA.pause(); audioA.src = '';
   isPlaying = false;
   document.getElementById('btnPlay').textContent = '▶ Escuchar';
