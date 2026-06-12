@@ -392,7 +392,7 @@ function appendMsg(msg) {
 function sendChat() {
   const text = document.getElementById('chatText').value.trim();
   if (!text) return;
-  socket.emit('chat_message', { user: 'DJ', text, role: 'dj' });
+  socket.emit('chat_message', { user: 'Admin Pampa AR', text, role: 'dj' });
   document.getElementById('chatText').value = '';
 }
 
@@ -644,7 +644,7 @@ async function startScreenShare() {
     preview.srcObject = stream;
     preview.style.display = 'block';
 
-    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm';
+    const mime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
     screenRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 1_500_000 });
     screenRecorder.ondataavailable = async e => {
       if (e.data.size > 0) {
@@ -964,8 +964,9 @@ async function toggleDJLocalCamera(on) {
       const deviceId = document.getElementById('localCamSelect').value;
       const constraints = { video: deviceId ? { deviceId: { exact: deviceId }, width: 1280, height: 720 } : { width: 1280, height: 720 }, audio: false };
       djLocalCamStream = await navigator.mediaDevices.getUserMedia(constraints);
-      const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
-      djLocalCamRecorder = new MediaRecorder(djLocalCamStream, { mimeType: mime, videoBitsPerSecond: 1_000_000 });
+
+      const djMime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+      djLocalCamRecorder = new MediaRecorder(djLocalCamStream, { mimeType: djMime, videoBitsPerSecond: 1_000_000 });
       djLocalCamRecorder.ondataavailable = async e => {
         if (e.data.size > 0) socket.emit('video_chunk', await e.data.arrayBuffer());
       };
@@ -984,6 +985,113 @@ async function toggleDJLocalCamera(on) {
     if (djLocalCamStream) { djLocalCamStream.getTracks().forEach(t => t.stop()); djLocalCamStream = null; }
     socket.emit('screen_share_stop');
   }
+}
+
+// ── Cámaras remotas en red ────────────────────────────────
+let activeCamSockets = {}; // socketId → true si cámara activa
+
+socket.on('remote_clients_update', clients => {
+  const container = document.getElementById('remoteCamList');
+  if (!container) return;
+  if (!clients || clients.length === 0) {
+    container.innerHTML = '<div style="color:#666;font-size:.85rem">Ninguna PC conectada. Abrí <strong>http://192.168.1.42:8001/remote-mic.html</strong> en la otra PC.</div>';
+    return;
+  }
+  container.innerHTML = clients.map(client => {
+    const isActive = client.cameraActive;
+    const cams = Array.isArray(client.cameras) ? client.cameras : [];
+    const camOptions = cams.length
+      ? cams.map(c => `<option value="${c.deviceId}">${c.label}</option>`).join('')
+      : '<option value="">Sin cámaras detectadas</option>';
+    return `
+      <div style="background:#1a1a22;border:1px solid #2a2a32;border-radius:6px;padding:6px 8px;margin-bottom:5px">
+        <div style="color:#e0e0e0;font-weight:600;margin-bottom:4px">🖥️ ${client.name}</div>
+        <select id="cam_sel_${client.socketId}" style="width:100%;padding:3px 5px;font-size:.72rem;background:#111;color:#f0f0f0;border:1px solid #333;border-radius:4px;margin-bottom:4px">
+          ${camOptions}
+        </select>
+        <button onclick="startRemoteCam('${client.socketId}')"
+          style="padding:3px 8px;font-size:.72rem;background:${isActive ? '#444' : '#c0392b'};color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:4px">
+          ${isActive ? '🔴 En vivo' : '▶ Encender'}
+        </button>
+        ${isActive ? `<button onclick="stopRemoteCam('${client.socketId}')" style="padding:3px 8px;font-size:.72rem;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer">⏹ Apagar</button>` : ''}
+      </div>`;
+  }).join('');
+});
+
+// Preview de cámara remota en el admin usando MSE
+let adminCamMse = null, adminCamBuf = null, adminCamQ = [];
+let adminCamChunks = 0;
+
+socket.on('remote_cam_chunk', chunk => {
+  adminCamChunks++;
+  const dbg = document.getElementById('remoteCamDebug');
+  if (dbg) dbg.textContent = `📡 Chunks recibidos: ${adminCamChunks}`;
+  initAdminCamMSE();
+  adminCamQ.push(chunk);
+  flushAdminCam();
+});
+
+function initAdminCamMSE() {
+  if (adminCamMse) return;
+  if (!window.MediaSource) return;
+  const vid = document.getElementById('remoteCamPreview');
+  if (!vid) return;
+  vid.style.display = 'block';
+  const mimes = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'];
+  const m = mimes.find(x => MediaSource.isTypeSupported(x));
+  if (!m) return;
+  adminCamMse = new MediaSource();
+  const thisMs = adminCamMse;
+  vid.src = URL.createObjectURL(adminCamMse);
+  adminCamMse.addEventListener('sourceopen', () => {
+    if (adminCamMse !== thisMs || thisMs.readyState !== 'open') return;
+    if (adminCamBuf) return;
+    try {
+      adminCamBuf = adminCamMse.addSourceBuffer(m);
+      adminCamBuf.mode = 'sequence';
+      adminCamBuf.addEventListener('updateend', flushAdminCam);
+      flushAdminCam();
+    } catch(e) { adminCamMse = null; adminCamBuf = null; adminCamQ = []; }
+  });
+  vid.addEventListener('canplay', function onCp() {
+    vid.removeEventListener('canplay', onCp);
+    vid.play().catch(() => {});
+  });
+  vid.onerror = () => { adminCamMse = null; adminCamBuf = null; adminCamQ = []; };
+}
+
+function flushAdminCam() {
+  if (!adminCamBuf || adminCamBuf.updating || adminCamQ.length === 0) return;
+  try {
+    if (adminCamBuf.buffered.length > 0) {
+      const end = adminCamBuf.buffered.end(0);
+      const start = adminCamBuf.buffered.start(0);
+      if (end - start > 10) { adminCamBuf.remove(start, end - 5); return; }
+    }
+    const c = adminCamQ.shift();
+    adminCamBuf.appendBuffer(c instanceof ArrayBuffer ? c : c.buffer);
+  } catch(e) {}
+}
+
+function startRemoteCam(socketId) {
+  const sel = document.getElementById('cam_sel_' + socketId);
+  const deviceId = sel ? sel.value : '';
+  // Resetear preview anterior
+  adminCamMse = null; adminCamBuf = null; adminCamQ = []; adminCamChunks = 0;
+  const vid = document.getElementById('remoteCamPreview');
+  if (vid) { vid.src = ''; vid.style.display = 'none'; }
+  socket.emit('admin_camera_start', { socketId, deviceId });
+  showToast('📷 Encendiendo cámara...');
+}
+
+function stopRemoteCam(socketId) {
+  socket.emit('admin_camera_stop', { socketId });
+  adminCamMse = null; adminCamBuf = null; adminCamQ = []; adminCamChunks = 0;
+  const vid = document.getElementById('remoteCamPreview');
+  if (vid) { vid.src = ''; vid.style.display = 'none'; }
+  const dbg = document.getElementById('remoteCamDebug');
+  if (dbg) dbg.textContent = '';
+  showToast('📷 Cámara apagada');
 }
 
 // Mic remoto en el mezclador DJ (recibe chunks vía socket → MSE)
@@ -1033,6 +1141,295 @@ socket.on('remote_mic_status', connected => {
   if (ind) ind.style.display = connected ? 'block' : 'none';
   initDJContext(); // carga la URL del servidor al conectar
 });
+
+// ══════════════════════════════════════════════════════
+// PODCAST MIC (desde panel Playlist) — mezcla mic + música
+// ══════════════════════════════════════════════════════
+let podcastStream = null, podcastRecorder = null, podcastCtx = null, podcastAnalyser = null, podcastMeterAnim = null;
+let podcastSystemStream = null;
+let podcastMusicGain = null;  // control de volumen de música en la mezcla
+
+// Cargar dispositivos de audio en el select de podcast
+(async function loadPodcastDevices() {
+  try {
+    await navigator.mediaDevices.getUserMedia({ audio: true }).then(s => s.getTracks().forEach(t => t.stop())).catch(() => {});
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const sel = document.getElementById('podcastAudioSrc');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Micrófono por defecto</option>';
+    devices.filter(d => d.kind === 'audioinput').forEach(d => {
+      const o = document.createElement('option');
+      o.value = d.deviceId;
+      o.textContent = d.label || 'Micrófono';
+      sel.appendChild(o);
+    });
+  } catch(e) {}
+})();
+
+async function startPodcastMic() {
+  try {
+    const deviceId = document.getElementById('podcastAudioSrc')?.value;
+    const includeSystem = document.getElementById('podcastIncludeSystem')?.checked;
+    const duckPct = parseInt(document.getElementById('podcastDuck')?.value ?? 30) / 100;
+
+    // Solo captura el micrófono — NO usamos captureStream() para evitar
+    // interferencias por diferencia de reloj entre AudioContext y el elemento <audio>
+    const micStream = await navigator.mediaDevices.getUserMedia({
+      audio: deviceId
+        ? { deviceId: { exact: deviceId } }
+        : { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false
+    });
+
+    // AudioContext solo para el mic (VU meter + opcional sistema)
+    podcastCtx = new AudioContext({ sampleRate: 48000 });
+    const dest = podcastCtx.createMediaStreamDestination();
+
+    const micSrc = podcastCtx.createMediaStreamSource(micStream);
+    podcastAnalyser = podcastCtx.createAnalyser();
+    micSrc.connect(podcastAnalyser);
+    micSrc.connect(dest);
+    drawPodcastMeter();
+
+    // Discord / sistema (opcional)
+    if (includeSystem) {
+      try {
+        podcastSystemStream = await navigator.mediaDevices.getDisplayMedia({ video: false, audio: true });
+        podcastCtx.createMediaStreamSource(podcastSystemStream).connect(dest);
+      } catch(e) {
+        showToast('⚠️ No se pudo capturar audio del sistema');
+      }
+    }
+
+    podcastStream = micStream;
+
+    // Grabar SOLO el mic y enviarlo como podcast_mic_chunk (evento separado de live_audio_chunk)
+    // Los oyentes escuchan la música del server + el mic como segundo canal — sin interferencias
+    const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    podcastRecorder = new MediaRecorder(dest.stream, { mimeType: mime, audioBitsPerSecond: 96000 });
+    podcastRecorder.ondataavailable = async e => {
+      if (e.data.size > 0) socket.emit('podcast_mic_chunk', await e.data.arrayBuffer());
+    };
+    podcastRecorder.start(200);
+
+    // Avisar al server: bajar la música a los oyentes y activar canal del mic
+    socket.emit('podcast_start', { duck: duckPct, name: '🎙️ Podcast en vivo' });
+
+    document.getElementById('btnPodcastStart').style.display = 'none';
+    document.getElementById('btnPodcastStop').style.display = '';
+    showToast('🎙️ Podcast al aire');
+  } catch(e) {
+    showToast('❌ Error mic: ' + e.message);
+  }
+}
+
+function stopPodcastMic() {
+  if (podcastRecorder) { podcastRecorder.stop(); podcastRecorder = null; }
+  if (podcastStream) { podcastStream.getTracks().forEach(t => t.stop()); podcastStream = null; }
+  if (podcastSystemStream) { podcastSystemStream.getTracks().forEach(t => t.stop()); podcastSystemStream = null; }
+  if (podcastCtx) { podcastCtx.close().catch(() => {}); podcastCtx = null; }
+  if (podcastMeterAnim) { cancelAnimationFrame(podcastMeterAnim); podcastMeterAnim = null; }
+  podcastAnalyser = null;
+  podcastMusicGain = null;
+  const bar = document.getElementById('podcastMeterBar');
+  if (bar) bar.style.width = '0%';
+  socket.emit('podcast_stop');
+  document.getElementById('btnPodcastStart').style.display = '';
+  document.getElementById('btnPodcastStop').style.display = 'none';
+  showToast('🎙️ Podcast detenido');
+}
+
+function duckMusic(val) {
+  const pct = parseInt(val);
+  const el = document.getElementById('podcastDuckLabel');
+  if (el) el.textContent = pct + '%';
+  // Si el podcast está activo, actualizar el duck en tiempo real
+  if (podcastRecorder) socket.emit('podcast_duck', pct / 100);
+}
+
+function drawPodcastMeter() {
+  if (!podcastAnalyser) return;
+  const data = new Uint8Array(podcastAnalyser.frequencyBinCount);
+  podcastAnalyser.getByteFrequencyData(data);
+  const avg = data.reduce((a, b) => a + b, 0) / data.length;
+  const bar = document.getElementById('podcastMeterBar');
+  if (bar) bar.style.width = Math.min(100, avg * 2) + '%';
+  podcastMeterAnim = requestAnimationFrame(drawPodcastMeter);
+}
+
+// ══════════════════════════════════════════════════════
+// BANNERS VISUALES
+// ══════════════════════════════════════════════════════
+let bannerRotTimer = null;
+let localBanners = [];
+let bannerRotIdx = 0;
+
+socket.on('banners_update', list => {
+  localBanners = list || [];
+  renderBannerList();
+});
+
+function renderBannerList() {
+  const el = document.getElementById('bannerList');
+  if (!el) return;
+  if (localBanners.length === 0) {
+    el.innerHTML = '<p style="font-size:.8rem;color:var(--muted);padding:6px 0">No hay banners guardados.</p>';
+    return;
+  }
+  el.innerHTML = localBanners.map(b => `
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface2);border-radius:8px;padding:8px 12px">
+      <span style="flex:1;font-size:.85rem">${escHtml(b.text)}</span>
+      <button onclick="emitBannerVoice('${escHtml(b.text).replace(/'/g,"\\'")}','${b.id}')"
+        title="Voz en off" style="background:transparent;border:none;cursor:pointer;font-size:1rem">🔊</button>
+      <button onclick="deleteBanner(${b.id})"
+        style="background:transparent;border:none;cursor:pointer;font-size:1rem;color:#ef4444">🗑️</button>
+    </div>
+  `).join('');
+}
+
+function addBanner() {
+  const inp = document.getElementById('bannerInput');
+  const text = inp?.value.trim();
+  if (!text) return;
+  socket.emit('banner_add', text);
+  inp.value = '';
+}
+
+function deleteBanner(id) {
+  socket.emit('banner_delete', id);
+}
+
+function emitBannerVoice(text, id) {
+  const profileId = document.getElementById('bannerVoiceProfile')?.value || 'valentina';
+  socket.emit('banner_broadcast', text);
+  speakWithProfile(text, profileId);
+  const p = VOICE_PROFILES[profileId];
+  showToast(`📣 Banner emitido — voz: ${p.label}`);
+}
+
+function startBannerRotation() {
+  if (localBanners.length === 0) { showToast('⚠️ Agregá banners primero'); return; }
+  stopBannerRotation();
+  const secs = parseInt(document.getElementById('bannerInterval')?.value || 10) * 1000;
+  const rotStatus = document.getElementById('bannerRotStatus');
+
+  function emitNext() {
+    if (localBanners.length === 0) return;
+    const b = localBanners[bannerRotIdx % localBanners.length];
+    bannerRotIdx++;
+    const profileId = document.getElementById('bannerVoiceProfile')?.value || 'valentina';
+    socket.emit('banner_broadcast', b.text);
+    speakWithProfile(b.text, profileId);
+    if (rotStatus) rotStatus.textContent = '🔄 ' + (VOICE_PROFILES[profileId]?.label || '') + ': ' + b.text.substring(0, 35);
+  }
+
+  emitNext();
+  bannerRotTimer = setInterval(emitNext, secs);
+  showToast('📣 Rotación de banners iniciada');
+}
+
+function stopBannerRotation() {
+  if (bannerRotTimer) { clearInterval(bannerRotTimer); bannerRotTimer = null; }
+  const rotStatus = document.getElementById('bannerRotStatus');
+  if (rotStatus) rotStatus.textContent = '';
+}
+
+// ══════════════════════════════════════════════════════
+// VOZ EN OFF — 5 PERFILES ARGENTINOS PAMPEANOS
+// ══════════════════════════════════════════════════════
+
+// Perfiles: pitch/rate simulan edad y género en la Web Speech API
+const VOICE_PROFILES = {
+  don_ernesto: { pitch: 0.62, rate: 0.78, genderHint: 'male',   label: 'Don Ernesto' },
+  dona_rosa:   { pitch: 0.80, rate: 0.75, genderHint: 'female', label: 'Doña Rosa'   },
+  valentina:   { pitch: 1.28, rate: 1.08, genderHint: 'female', label: 'Valentina'   },
+  sofia:       { pitch: 1.14, rate: 1.00, genderHint: 'female', label: 'Sofía'       },
+  mateo:       { pitch: 0.90, rate: 1.10, genderHint: 'male',   label: 'Mateo'       },
+};
+
+let _allVoices = [];
+
+function _refreshVoices() {
+  _allVoices = speechSynthesis.getVoices();
+}
+speechSynthesis.onvoiceschanged = () => { _refreshVoices(); populateVoiceSelect(); };
+setTimeout(_refreshVoices, 400);
+
+// Encuentra la mejor voz española para el perfil
+function _pickVoice(genderHint) {
+  if (_allVoices.length === 0) _refreshVoices();
+  const es = _allVoices.filter(v => v.lang.startsWith('es'));
+  if (!es.length) return _allVoices[0] || null;
+
+  // Nombres masculinos conocidos (Microsoft, Google)
+  const maleNames  = /andres|diego|jorge|pablo|miguel|male|hombre/i;
+  const femaleNames = /sabina|elena|laura|sofia|maria|female|mujer/i;
+
+  const typed = genderHint === 'male'
+    ? es.filter(v => maleNames.test(v.name))
+    : es.filter(v => femaleNames.test(v.name));
+
+  // Prioridad: es-AR, luego es-419, luego cualquier es
+  const byRegion = arr =>
+       arr.find(v => v.lang === 'es-AR')
+    || arr.find(v => v.lang === 'es-419')
+    || arr.find(v => v.lang.startsWith('es-'))
+    || arr[0] || null;
+
+  return byRegion(typed.length ? typed : es);
+}
+
+function speakWithProfile(text, profileId) {
+  if (!text) return;
+  const p = VOICE_PROFILES[profileId] || VOICE_PROFILES.valentina;
+  speechSynthesis.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.lang  = 'es-AR';
+  utt.pitch = p.pitch;
+  utt.rate  = p.rate;
+  const v = _pickVoice(p.genderHint);
+  if (v) utt.voice = v;
+  speechSynthesis.speak(utt);
+}
+
+// Alias para compatibilidad con previewAd y cualquier otro llamador
+function speakArgentine(text) {
+  const profileId = document.getElementById('bannerVoiceProfile')?.value || 'valentina';
+  speakWithProfile(text, profileId);
+}
+
+function testBannerVoice() {
+  const profileId = document.getElementById('bannerVoiceProfile')?.value || 'valentina';
+  const p = VOICE_PROFILES[profileId];
+  speakWithProfile(`Hola, soy ${p.label}. Bienvenidos a Radio Pampa AR.`, profileId);
+}
+
+// Reemplazar previewAd para usar voz argentina
+function previewAd() {
+  const text = document.getElementById('adText')?.value.trim();
+  if (!text) return;
+  speakArgentine(text);
+}
+
+// Poblar select de voces del panel Voz en off (adVoice)
+function populateVoiceSelect() {
+  const sel = document.getElementById('adVoice');
+  if (!sel) return;
+  const voices = _allVoices.length ? _allVoices : speechSynthesis.getVoices();
+  sel.innerHTML = '';
+  const es    = voices.filter(v => v.lang.startsWith('es'));
+  const other = voices.filter(v => !v.lang.startsWith('es'));
+  [...es, ...other].forEach(v => {
+    const o = document.createElement('option');
+    o.value = v.name;
+    o.textContent = (v.lang === 'es-AR' ? '🇦🇷 ' : '') + `${v.name} (${v.lang})`;
+    sel.appendChild(o);
+  });
+  // Preferir es-AR o es-419
+  const best = es.find(v => v.lang === 'es-AR') || es.find(v => v.lang === 'es-419') || es[0];
+  if (best) sel.value = best.name;
+}
+setTimeout(populateVoiceSelect, 600);
 
 // ── Utils ──────────────────────────────────────────────
 function escHtml(s) {
