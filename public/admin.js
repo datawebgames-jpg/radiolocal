@@ -1009,11 +1009,11 @@ socket.on('remote_clients_update', clients => {
         <select id="cam_sel_${client.socketId}" style="width:100%;padding:3px 5px;font-size:.72rem;background:#111;color:#f0f0f0;border:1px solid #333;border-radius:4px;margin-bottom:4px">
           ${camOptions}
         </select>
-        <button onclick="startRemoteCam('${client.socketId}')"
-          style="padding:3px 8px;font-size:.72rem;background:${isActive ? '#444' : '#c0392b'};color:#fff;border:none;border-radius:4px;cursor:pointer;margin-right:4px">
-          ${isActive ? '🔴 En vivo' : '▶ Encender'}
-        </button>
-        ${isActive ? `<button onclick="stopRemoteCam('${client.socketId}')" style="padding:3px 8px;font-size:.72rem;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer">⏹ Apagar</button>` : ''}
+        ${isActive
+          ? `<span style="padding:3px 8px;font-size:.72rem;background:#1a6b1a;color:#7fff7f;border-radius:4px;margin-right:4px">🔴 En vivo</span>
+             <button onclick="stopRemoteCam('${client.socketId}')" style="padding:3px 8px;font-size:.72rem;background:#333;color:#fff;border:none;border-radius:4px;cursor:pointer">⏹ Apagar</button>`
+          : `<button onclick="startRemoteCam('${client.socketId}')" style="padding:3px 8px;font-size:.72rem;background:#c0392b;color:#fff;border:none;border-radius:4px;cursor:pointer">▶ Encender</button>`
+        }
       </div>`;
   }).join('');
 });

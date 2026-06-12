@@ -50,6 +50,7 @@ if (!fs.existsSync(ADS_DIR)) fs.mkdirSync(ADS_DIR, { recursive: true });
 
 // Estado de ads
 let adsList = [];
+let bannersList = [];
 let adScheduleTimer = null;
 let rtmpProc = null;
 
@@ -64,9 +65,41 @@ function isYouTubeUrl(url) {
   return /youtube\.com\/(watch|live|shorts)|youtu\.be\//.test(url);
 }
 
+const https = require('https');
+const selfsigned = require('selfsigned');
+
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
+
+// HTTPS local para que PCs de la red accedan a remote-mic sin túnel
+let httpsServer = null;
+try {
+  const pems = selfsigned.generate([{ name: 'commonName', value: '192.168.1.42' }], {
+    days: 3650,
+    keySize: 2048,
+    algorithm: 'sha256',
+    extensions: [{
+      name: 'subjectAltName',
+      altNames: [
+        { type: 7, ip: '192.168.1.42' },
+        { type: 7, ip: '127.0.0.1' },
+        { type: 2, value: 'localhost' },
+      ]
+    }]
+  });
+  httpsServer = https.createServer({ key: pems.private, cert: pems.cert }, app);
+  httpsServer.listen(8443, () => {
+    console.log(`🔒 HTTPS local: https://192.168.1.42:8443`);
+    console.log(`📷 Remote-mic: https://192.168.1.42:8443/remote-mic.html`);
+  });
+} catch(e) {
+  console.warn('HTTPS local no disponible:', e.message);
+}
+
+// Mismo io conectado a HTTP y HTTPS
+const io = new Server();
+io.attach(server);
+if (httpsServer) io.attach(httpsServer);
 
 const PORT = process.env.PORT || 8001;
 const UPLOADS_DIR = path.join(__dirname, 'public', 'uploads');
@@ -439,13 +472,26 @@ app.post('/api/mp-token', (req, res) => {
 // ── Socket.io ──────────────────────────────────────────────
 const chatHistory = [];
 
+// Registro de clientes remotos y sus cámaras
+const remoteClients = {}; // socketId → { name, cameras: [{deviceId, label}] }
+
+function broadcastRemoteClients() {
+  const list = Object.entries(remoteClients).map(([id, c]) => ({ socketId: id, name: c.name, cameras: c.cameras, cameraActive: !!c.cameraActive }));
+  io.emit('remote_clients_update', list);
+}
+
 io.on('connection', socket => {
   radioState.listeners++;
   io.emit('listeners_count', radioState.listeners);
 
   // Sincronizar estado al nuevo oyente
   socket.emit('state_sync', radioState);
+  socket.emit('banners_update', bannersList);
   socket.emit('chat_history', chatHistory.slice(-50));
+
+  // Enviar lista actual de clientes remotos
+  const currentClients = Object.entries(remoteClients).map(([id, c]) => ({ socketId: id, name: c.name, cameras: c.cameras, cameraActive: c.cameraActive }));
+  socket.emit('remote_clients_update', currentClients);
 
   socket.on('chat_message', data => {
     const msg = {
@@ -458,6 +504,48 @@ io.on('connection', socket => {
     chatHistory.push(msg);
     if (chatHistory.length > 200) chatHistory.shift();
     io.emit('chat_message', msg);
+  });
+
+  // Cliente remoto reporta sus cámaras disponibles
+  socket.on('report_cameras', ({ name, cameras }) => {
+    remoteClients[socket.id] = { name: name || 'PC remota', cameras: cameras || [] };
+    broadcastRemoteClients();
+  });
+
+  // Admin arranca/detiene cámara de un cliente remoto específico
+  socket.on('admin_camera_start', ({ socketId, deviceId }) => {
+    io.to(socketId).emit('trigger_camera_start', { deviceId });
+  });
+  socket.on('admin_camera_stop', ({ socketId }) => {
+    io.to(socketId).emit('trigger_camera_stop');
+  });
+
+  // El cliente remoto informa que su cámara está activa/inactiva
+  socket.on('camera_status', ({ active }) => {
+    if (remoteClients[socket.id]) {
+      remoteClients[socket.id].cameraActive = active;
+      broadcastRemoteClients();
+    }
+  });
+
+  // ── Banners visuales ─────────────────────────────────────────
+  socket.on('banner_add', text => {
+    if (!text || typeof text !== 'string') return;
+    const banner = { id: Date.now(), text: text.trim() };
+    bannersList.push(banner);
+    io.emit('banners_update', bannersList);
+  });
+  socket.on('banner_delete', id => {
+    bannersList = bannersList.filter(b => b.id !== id);
+    io.emit('banners_update', bannersList);
+  });
+  socket.on('banner_broadcast', text => {
+    io.emit('banner_show', { text });
+  });
+
+  // ── Duck música ───────────────────────────────────────────────
+  socket.on('music_duck', level => {
+    socket.broadcast.emit('music_duck', Math.min(1, Math.max(0, Number(level) || 0)));
   });
 
   // Admin emite publicidad → retransmitir a todos los oyentes
@@ -473,9 +561,30 @@ io.on('connection', socket => {
     relaySocket?.emit('broadcast_chunk', chunk);
   });
 
+  // Podcast mic: canal separado — la música sigue sonando, solo se baja el volumen
+  socket.on('podcast_start', ({ duck, name }) => {
+    socket.broadcast.emit('podcast_start', { duck: Math.min(1, Math.max(0, Number(duck) || 0.3)), name });
+  });
+  socket.on('podcast_mic_chunk', chunk => {
+    socket.broadcast.emit('podcast_mic_chunk', chunk);
+  });
+  socket.on('podcast_duck', level => {
+    socket.broadcast.emit('podcast_duck', Math.min(1, Math.max(0, Number(level) || 0)));
+  });
+  socket.on('podcast_stop', () => {
+    socket.broadcast.emit('podcast_stop');
+  });
+  // Compatibilidad con versiones anteriores
+  socket.on('podcast_go_live', ({ name }) => {
+    socket.broadcast.emit('podcast_start', { duck: 0.3, name: name || '🎙️ Podcast' });
+  });
+  socket.on('podcast_stop_live', () => {
+    socket.broadcast.emit('podcast_stop');
+  });
+
   // Relay de video (pantalla / webcam) → oyentes
   socket.on('video_chunk', (chunk) => {
-    socket.broadcast.emit('video_chunk', chunk);
+    io.emit('video_chunk', chunk);
   });
   socket.on('screen_share_stop', () => {
     io.emit('screen_share_stop');
@@ -494,7 +603,8 @@ io.on('connection', socket => {
   });
 
   socket.on('remote_video_chunk', (chunk) => {
-    socket.broadcast.emit('video_chunk', chunk);
+    socket.broadcast.emit('video_chunk', chunk);       // para radios.html
+    socket.broadcast.emit('remote_cam_chunk', chunk);  // para preview admin
   });
 
   socket.on('remote_video_stop', () => {
@@ -522,6 +632,10 @@ io.on('connection', socket => {
     radioState.listeners = Math.max(0, radioState.listeners - 1);
     io.emit('listeners_count', radioState.listeners);
     if (socket.isRemoteMic) io.emit('remote_mic_status', false);
+    if (remoteClients[socket.id]) {
+      delete remoteClients[socket.id];
+      broadcastRemoteClients();
+    }
   });
 });
 
