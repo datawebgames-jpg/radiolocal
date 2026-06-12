@@ -209,6 +209,7 @@ async function startCamera() {
     preview.srcObject = camStream;
     preview.style.display = 'block';
 
+    socket.emit('video_stream_start'); // resetea MSE en todos los oyentes antes del primer chunk
     const camMime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
     camRecorder = new MediaRecorder(camStream, { mimeType: camMime, videoBitsPerSecond: 1_000_000 });
     camRecorder.ondataavailable = async e => {

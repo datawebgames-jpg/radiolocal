@@ -645,6 +645,7 @@ async function startScreenShare() {
     preview.style.display = 'block';
 
     const mime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+    socket.emit('video_stream_start'); // resetea MSE en todos los oyentes
     screenRecorder = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 1_500_000 });
     screenRecorder.ondataavailable = async e => {
       if (e.data.size > 0) {

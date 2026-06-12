@@ -583,6 +583,9 @@ io.on('connection', socket => {
   });
 
   // Relay de video (pantalla / webcam) → oyentes
+  socket.on('video_stream_start', () => {
+    socket.broadcast.emit('video_stream_start');
+  });
   socket.on('video_chunk', (chunk) => {
     io.emit('video_chunk', chunk);
   });
