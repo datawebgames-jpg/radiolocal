@@ -88,6 +88,36 @@
 const socket = io();
 socket.emit('remote_mic_identify');
 
+// Reportar nombre de PC y cámaras disponibles al servidor
+async function reportCameras() {
+  if (!navigator.mediaDevices) {
+    setStatus('⚠️ Usá HTTPS: abrí esta página con la URL del túnel Cloudflare, no con la IP local.', false);
+    return;
+  }
+  try {
+    await navigator.mediaDevices.getUserMedia({ video: true }).then(s => s.getTracks().forEach(t => t.stop())).catch(() => {});
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameras = devices.filter(d => d.kind === 'videoinput').map(d => ({ deviceId: d.deviceId, label: d.label || 'Cámara' }));
+    const name = 'PC ' + location.hostname;
+    socket.emit('report_cameras', { name, cameras });
+  } catch(e) {}
+}
+socket.on('connect', reportCameras);
+
+// Admin arranca cámara específica
+socket.on('trigger_camera_start', ({ deviceId }) => {
+  if (camStream) stopCamera();
+  // Forzar selección del dispositivo
+  const sel = document.getElementById('videoSource');
+  if (deviceId) {
+    for (let i = 0; i < sel.options.length; i++) {
+      if (sel.options[i].value === deviceId) { sel.selectedIndex = i; break; }
+    }
+  }
+  startCamera();
+});
+socket.on('trigger_camera_stop', () => { if (camStream) stopCamera(); });
+
 let micRecorder = null, micStream = null;
 let camRecorder = null, camStream = null;
 let meterAnalyser = null, meterAnim = null;
@@ -179,8 +209,8 @@ async function startCamera() {
     preview.srcObject = camStream;
     preview.style.display = 'block';
 
-    const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8') ? 'video/webm;codecs=vp8' : 'video/webm';
-    camRecorder = new MediaRecorder(camStream, { mimeType: mime, videoBitsPerSecond: 1_000_000 });
+    const camMime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+    camRecorder = new MediaRecorder(camStream, { mimeType: camMime, videoBitsPerSecond: 1_000_000 });
     camRecorder.ondataavailable = async e => {
       if (e.data.size > 0) socket.emit('remote_video_chunk', await e.data.arrayBuffer());
     };
@@ -188,6 +218,7 @@ async function startCamera() {
 
     document.getElementById('btnCamStart').style.display = 'none';
     document.getElementById('btnCamStop').style.display = '';
+    socket.emit('camera_status', { active: true });
     if (!micStream) setStatus('🔴 Cámara en el aire', true);
 
     camStream.getVideoTracks()[0].addEventListener('ended', stopCamera);
@@ -200,6 +231,7 @@ function stopCamera() {
   if (camRecorder) { camRecorder.stop(); camRecorder = null; }
   if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
   socket.emit('remote_video_stop');
+  socket.emit('camera_status', { active: false });
   const preview = document.getElementById('camPreview');
   preview.srcObject = null;
   preview.style.display = 'none';
